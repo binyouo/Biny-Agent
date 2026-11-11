@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 import sys
+import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from harbor.models.agent.context import AgentContext
+from harbor.agents.installed.base import UnknownApiError
 from scripts.evals.harbor.biny_agent import (
     BinyAgent,
     ensure_package,
@@ -27,6 +31,57 @@ from scripts.evals.harbor.fast_verifier import _fast_eligible
 
 
 class EvaluationConfigurationTests(unittest.TestCase):
+    def test_generated_configuration_loads_in_current_biny(self) -> None:
+        profiles = [
+            ({}, 1_000_000, None),
+            ({
+                "BINY_EVAL_PROVIDER": "magpie",
+                "BINY_EVAL_MODEL": "auto/deepseek-v4.1-flash",
+                "BINY_EVAL_BASE_URL": "http://host.docker.internal:3425/v1",
+                "BINY_EVAL_API_KEY_ENV": "MAGPIE_API_KEY",
+                "BINY_EVAL_CONTEXT_WINDOW": "1048576",
+                "BINY_EVAL_MAX_OUTPUT_TOKENS": "384000",
+                "BINY_EVAL_REASONING": "1",
+                "BINY_EVAL_REASONING_EFFORT": "max",
+            }, 1_048_576, 384_000),
+        ]
+        for profile, context_window, max_output_tokens in profiles:
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
+                with patch.dict(os.environ, {}, clear=True):
+                    config = make_config("deepseek-v4.1-flash", profile)
+                root = Path(directory)
+                config_path = root / "config.json"
+                config_path.write_text(json.dumps(config), encoding="utf-8")
+                config_path.chmod(0o600)
+                result = subprocess.run(
+                    [
+                        "node", "--import", "tsx", "--input-type=module", "-e",
+                        "import { loadConfigFile } from './src/config/loader.ts';"
+                        "const config = await loadConfigFile(process.env.BINY_AGENT_DIR);"
+                        "console.log(JSON.stringify({"
+                        "contextWindow: config.models[config.defaultModel].contextWindow,"
+                        "maxOutputTokens: config.models[config.defaultModel].maxOutputTokens ?? null,"
+                        "hardStepLimit: config.agent.hardStepLimit}));",
+                    ],
+                    cwd=Path(__file__).resolve().parents[1],
+                    env={**os.environ, "BINY_AGENT_DIR": str(root)},
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {
+                    "contextWindow": context_window,
+                    "maxOutputTokens": max_output_tokens,
+                    "hardStepLimit": 100_000,
+                })
+
+    def test_explicit_output_limit_must_fit_the_model_configuration_range(self) -> None:
+        for value in ["0", "-1", "2000001", "not-a-number"]:
+            with self.subTest(value=value), patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(ValueError):
+                    make_config("deepseek-v4.1-flash", {"BINY_EVAL_MAX_OUTPUT_TOKENS": value})
+
     def test_deepseek_v41_uses_full_preset_context_by_default(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             config = make_config("deepseek-v4.1-flash")
@@ -773,6 +828,108 @@ class HarborClassificationTests(unittest.TestCase):
 
 
 class AgentExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_setup_only_reuses_dependencies_for_the_execution_platform(self) -> None:
+        for matching_cache in [False, True]:
+            with self.subTest(matching_cache=matching_cache), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                package = root / "package.tgz"
+                cache = root / "cache"
+                cache.mkdir()
+                manifest = b'{"dependencies":{"sqlite-vec":"0.1.9"}}'
+                files = [(package, "package/package.json")]
+                files.extend((cache / name, "biny/node_modules/@biny012/biny/package.json") for name in [
+                    "biny-runtime-legacy.tgz", "biny-runtime-linux-arm64-old.tgz",
+                    *(["biny-runtime-linux-x64-old.tgz"] if matching_cache else []),
+                ])
+                for path, member_name in files:
+                    with tarfile.open(path, "w:gz") as archive:
+                        member = tarfile.TarInfo(member_name)
+                        member.size = len(manifest)
+                        archive.addfile(member, io.BytesIO(manifest))
+
+                class PlatformEnvironment(FakeEnvironment):
+                    async def exec(self, command, **kwargs):
+                        if "process.platform" in command:
+                            return SimpleNamespace(return_code=0, stdout="linux-x64\n", stderr="")
+                        if "npm install --prefix" in command:
+                            raise InterruptedError("install fresh x64 dependencies")
+                        return await super().exec(command, **kwargs)
+
+                    async def upload_file(self, source: Path, target: str) -> None:
+                        if target == "/tmp/biny-runtime.tgz":
+                            raise InterruptedError(f"reuse {source.name}")
+
+                expected = "reuse biny-runtime-linux-x64-old" if matching_cache else "install fresh x64"
+                with (
+                    patch("scripts.evals.harbor.biny_agent.ensure_package", return_value=package),
+                    patch("scripts.evals.harbor.biny_agent.PACKAGE_CACHE", cache),
+                    patch("scripts.evals.harbor.biny_agent.RUNTIME_CACHE_FILE_LOCK", root / "runtime.lock"),
+                    self.assertRaisesRegex(InterruptedError, expected),
+                ):
+                    await BinyAgent(root / "logs").setup(PlatformEnvironment())
+
+    async def test_run_reports_provider_error_instead_of_a_scored_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            outcome = {"status": "incomplete", "stopReason": "provider_error", "error": "empty response"}
+            environment = FakeEnvironment(outcome)
+            agent = BinyAgent(Path(directory))
+            with self.assertRaisesRegex(UnknownApiError, "empty response"):
+                await agent.run("finish task", environment, AgentContext())
+            saved = json.loads((Path(directory) / "biny-result.json").read_text())
+            self.assertEqual(saved["outcome"], outcome)
+
+    async def test_run_keeps_instruction_in_private_agent_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            environment = FakeEnvironment()
+            await BinyAgent(Path(directory)).run("finish task", environment, AgentContext())
+            command = environment.calls[1]["command"]
+            self.assertIn("/opt/biny-global/harbor-instruction.txt", command)
+            self.assertNotIn("mkdir -p .agent", command)
+
+    async def test_run_rejects_failed_or_cancelled_outcomes_before_scoring(self) -> None:
+        for status, reason in [
+            ("failed", "missing_terminal_event"),
+            ("cancelled", "cancelled"),
+            ("aborted", "host_shutdown"),
+            ("unknown", "unknown"),
+        ]:
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                environment = FakeEnvironment({"status": status, "stopReason": reason})
+                with self.assertRaisesRegex(RuntimeError, status):
+                    await BinyAgent(Path(directory)).run("finish task", environment, AgentContext())
+
+    async def test_setup_uploads_linked_runtime_cache_as_file_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "package.tgz"
+            package.write_bytes(b"test package")
+            cache = root / "cache"
+            cache.mkdir()
+            archive = root / "external-runtime.tgz"
+            archive.write_bytes(b"runtime archive contents")
+            package_hash = hashlib.sha256(package.read_bytes()).hexdigest()
+            (cache / f"biny-runtime-linux-arm64-{package_hash[:16]}.tgz").symlink_to(archive)
+            uploads = root / "uploads"
+            uploads.mkdir()
+
+            class UploadEnvironment(FakeEnvironment):
+                async def upload_file(self, source: Path, target: str) -> None:
+                    shutil.copyfile(source, uploads / Path(target).name, follow_symlinks=False)
+                    if target == "/tmp/biny-runtime.tgz":
+                        raise InterruptedError("runtime cache transferred")
+
+            with (
+                patch("scripts.evals.harbor.biny_agent.ensure_package", return_value=package),
+                patch("scripts.evals.harbor.biny_agent.PACKAGE_CACHE", cache),
+                patch("scripts.evals.harbor.biny_agent.RUNTIME_CACHE_FILE_LOCK", root / "runtime.lock"),
+                self.assertRaisesRegex(InterruptedError, "runtime cache transferred"),
+            ):
+                await BinyAgent(root / "logs").setup(UploadEnvironment())
+
+            uploaded = uploads / "biny-runtime.tgz"
+            self.assertFalse(uploaded.is_symlink())
+            self.assertEqual(uploaded.read_bytes(), b"runtime archive contents")
+
     async def test_run_delegates_default_command_timeout_to_harbor(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {}, clear=True
@@ -796,13 +953,15 @@ class AgentExecutionTests(unittest.IsolatedAsyncioTestCase):
             os.environ, {}, clear=True
         ):
             agent = BinyAgent(Path(directory), model_name="deepseek-v4.1-flash")
-            environment = FakeEnvironment()
+            environment = FakeEnvironment({"status": "incomplete", "stopReason": "budget_exhausted"})
             context = AgentContext()
 
             await agent.run("complete the task", environment, context)
 
             command = str(environment.calls[1]["command"])
             self.assertIn("biny run --json --", command)
+            saved = json.loads((Path(directory) / "biny-result.json").read_text())
+            self.assertEqual(saved["outcome"]["status"], "incomplete")
 
     async def test_run_passes_execution_environment_process_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(
@@ -873,8 +1032,12 @@ class AgentExecutionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class FakeEnvironment:
-    def __init__(self) -> None:
+    def __init__(self, outcome: dict[str, object] | None = None) -> None:
         self.calls: list[dict[str, object]] = []
+        self.outcome = outcome or {"status": "completed", "stopReason": "model_stop"}
+
+    async def download_dir(self, source: str, target: Path) -> None:
+        target.mkdir(parents=True, exist_ok=True)
 
     async def exec(
         self,
@@ -893,7 +1056,11 @@ class FakeEnvironment:
                 "user": user,
             }
         )
-        return SimpleNamespace(return_code=0, stdout="/workspace\n", stderr="")
+        if "process.platform" in command:
+            stdout = "linux-arm64\n"
+        else:
+            stdout = json.dumps(self.outcome) if "biny run " in command else "/workspace\n"
+        return SimpleNamespace(return_code=0, stdout=stdout, stderr="")
 
 
 if __name__ == "__main__":

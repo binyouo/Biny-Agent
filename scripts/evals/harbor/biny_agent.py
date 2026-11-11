@@ -30,6 +30,7 @@ from typing import Any, AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
 from harbor.agents.base import BaseAgent
+from harbor.agents.installed.base import UnknownApiError
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
@@ -108,15 +109,22 @@ class BinyAgent(BaseAgent):
 
         # 依赖树装好之后与源码无关：打包缓存到宿主机，后续容器直接解压，
         # setup 阶段就不再碰网络——容器网络抖一下不会再毁掉整道题。
+        platform_check = await environment.exec(
+            "export PATH=/opt/node/bin:$PATH; "
+            "node -p 'process.platform + \"-\" + process.arch'"
+        )
+        runtime_platform = (platform_check.stdout or "").strip()
+        if platform_check.return_code != 0 or runtime_platform not in {"linux-x64", "linux-arm64"}:
+            raise RuntimeError(format_exec_error("resolving the Biny runtime platform", platform_check))
         package_sha256 = hashlib.sha256(package_path.read_bytes()).hexdigest()
-        runtime_cache = PACKAGE_CACHE / f"biny-runtime-{package_sha256[:16]}.tgz"
+        runtime_cache = PACKAGE_CACHE / f"biny-runtime-{runtime_platform}-{package_sha256[:16]}.tgz"
         restored_from_cache = False
         async with runtime_cache_guard():
             runtime_source = (
-                runtime_cache if runtime_cache.exists() else _find_runtime_cache(package_path)
+                runtime_cache if runtime_cache.exists() else _find_runtime_cache(package_path, runtime_platform)
             )
             if runtime_source is not None:
-                await environment.upload_file(runtime_source, "/tmp/biny-runtime.tgz")
+                await environment.upload_file(runtime_source.resolve(strict=True), "/tmp/biny-runtime.tgz")
                 restored_from_cache = True
             else:
                 npm_retry_env = (
@@ -200,10 +208,18 @@ class BinyAgent(BaseAgent):
         # 我们通过 BINY_AGENT_DIR 把全局目录重定向到 /opt/biny-global，并把含模型定义的完整
         # config 写进去。这样项目级无需任何多余文件，biny run 也能看到 opencode-go 等新模型。
         global_dir = "/opt/biny-global"
-        await environment.exec(
-            f"mkdir -p {shlex.quote(global_dir)}",
+        identity = await environment.exec("id -u && id -g")
+        if identity.return_code != 0:
+            raise RuntimeError(format_exec_error("resolving the task user", identity))
+        uid, gid = (int(value) for value in identity.stdout.split())
+        prepared = await environment.exec(
+            f"mkdir -p {shlex.quote(global_dir)} && "
+            f"chown {uid}:{gid} {shlex.quote(global_dir)} && "
+            f"chmod 700 {shlex.quote(global_dir)}",
             user="root",
         )
+        if prepared.return_code != 0:
+            raise RuntimeError(format_exec_error("preparing Biny state for the task user", prepared))
         model_alias = resolve_model_alias(self.model_name)
         config = make_config(model_alias, self.extra_env)
         agent_exec_timeout = _agent_exec_timeout({**os.environ, **self.extra_env})
@@ -291,14 +307,14 @@ class BinyAgent(BaseAgent):
                 f" --finalization-reserve-ms {reserve_ms}"
             )
         encoded_instruction = base64.b64encode(instruction.encode("utf-8")).decode("ascii")
+        instruction_file = "/opt/biny-global/harbor-instruction.txt"
         command = (
             "export PATH=/opt/node/bin:$PATH; "
-            "mkdir -p .agent && "
-            f"printf %s {shlex.quote(encoded_instruction)} | base64 -d > .agent/harbor-instruction.txt && "
+            f"printf %s {shlex.quote(encoded_instruction)} | base64 -d > {shlex.quote(instruction_file)} && "
             # "--" 必须有：有的题 instruction 正好以 markdown 的 "- " 开头
             # （实测 pytorch-model-recovery），不加就会被 commander 当成选项，
             # 报 "error: unknown option '- You are given ...'"，整题作废。
-            f'biny run {command_flags} -- "$(cat .agent/harbor-instruction.txt)"'
+            f'biny run {command_flags} -- "$(cat {shlex.quote(instruction_file)})"'
         )
         result = await environment.exec(
             command,
@@ -306,6 +322,15 @@ class BinyAgent(BaseAgent):
             env=run_env,
             timeout_sec=agent_exec_timeout,
         )
+        outcome = None
+        for line in reversed((result.stdout or "").splitlines()):
+            try:
+                candidate = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and "status" in candidate and "stopReason" in candidate:
+                outcome = candidate
+                break
 
         record = {
             "model": resolve_model_alias(self.model_name),
@@ -325,6 +350,7 @@ class BinyAgent(BaseAgent):
             "return_code": result.return_code,
             "stdout": result.stdout or "",
             "stderr": result.stderr or "",
+            "outcome": outcome,
         }
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         (self.logs_dir / "biny-result.json").write_text(
@@ -342,9 +368,21 @@ class BinyAgent(BaseAgent):
             "return_code": result.return_code,
             "stdout_tail": (result.stdout or "")[-8_000:],
             "stderr_tail": (result.stderr or "")[-8_000:],
+            "outcome": outcome,
         }
+        if outcome is not None:
+            await environment.download_dir("/opt/biny-global/sessions", self.logs_dir / "sessions")
         if result.return_code != 0:
             raise RuntimeError(format_exec_error("running Biny", result))
+        if outcome is None:
+            raise RuntimeError("Biny did not return a structured run outcome.")
+        if outcome.get("stopReason") == "provider_error":
+            raise UnknownApiError(str(outcome.get("error") or "Biny provider request failed."))
+        if outcome.get("status") not in {"completed", "incomplete", "blocked"}:
+            raise RuntimeError(
+                f"Biny run {outcome.get('status')}: "
+                f"{outcome.get('error') or outcome.get('stopReason')}"
+            )
 
 
 def ensure_package() -> Path:
@@ -622,6 +660,14 @@ def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> 
         "capabilities": model_capabilities,
         "contextWindow": _context_window(model_alias, runtime_env),
     }
+    output_limit = (runtime_env or {}).get(
+        "BINY_EVAL_MAX_OUTPUT_TOKENS", os.environ.get("BINY_EVAL_MAX_OUTPUT_TOKENS")
+    )
+    if output_limit is not None:
+        output_tokens = int(output_limit)
+        if not 1 <= output_tokens <= 2_000_000:
+            raise ValueError("BINY_EVAL_MAX_OUTPUT_TOKENS must be between 1 and 2000000")
+        model_config["maxOutputTokens"] = output_tokens
     if is_reasoning_model:
         model_config["capabilities"]["reasoning"] = True
         model_config["thinkingLevelMap"] = {"off": "none", "high": "high", "max": "max"}
@@ -651,7 +697,7 @@ def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> 
     }
     return {
         "format": "biny-config",
-        "configVersion": 1,
+        "configVersion": 2,
         "defaultModel": model_alias,
         "providers": {provider["alias"]: provider_config},
         "models": {model_alias: model_config},
@@ -727,11 +773,11 @@ async def runtime_cache_guard() -> AsyncIterator[None]:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _find_runtime_cache(package: Path) -> Path | None:
-    """只复用依赖清单完全一致的 runtime，避免源码包哈希变化触发重复安装。"""
+def _find_runtime_cache(package: Path, runtime_platform: str) -> Path | None:
+    """只复用执行平台及依赖清单一致的 runtime；旧的无平台缓存不能证明二进制兼容。"""
 
     expected = _dependency_manifest(package, "package/package.json")
-    for candidate in sorted(PACKAGE_CACHE.glob("biny-runtime-*.tgz")):
+    for candidate in sorted(PACKAGE_CACHE.glob(f"biny-runtime-{runtime_platform}-*.tgz")):
         try:
             actual = _dependency_manifest(
                 candidate,
