@@ -42,7 +42,7 @@ const hostReadQueryRegistrations = new WeakMap<RegisteredTool, {
   schema: Tool["schema"];
 }>();
 const reviewedBuiltinReads = new Set(["Read", "Glob", "Grep",
-  "WebSearch", "WebFetch", "BrowserReadDom", "BrowserListEnvironments", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
+  "WebSearch", "WebFetch", "BrowserRead", "BrowserReadDom", "BrowserListEnvironments", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
   "WidgetReadme", "read_checkpoint_evidence"]);
 
 /** Shared by discovery and execution. Serialized/tool-supplied hints grant no authority. */

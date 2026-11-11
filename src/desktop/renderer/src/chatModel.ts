@@ -198,7 +198,7 @@ const EXPLORING_TOOLS = new Set([
   "mcp_list_resources", "mcp_read_resource",
   "activity_search", "activity_search_semantic", "activity_sessions", "activity_session_show",
   "activity_report", "activity_digest",
-  "recall_memory", "skill_search", "BrowserReadDom", "BrowserListEnvironments",
+  "recall_memory", "skill_search", "BrowserRead", "BrowserReadDom", "BrowserListEnvironments",
   "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
 ]);
 
@@ -434,6 +434,7 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
       row.verb = "按键";
       row.object = stringArg(tool, "key") ?? tool.description ?? "…";
       return row;
+    case "BrowserRead":
     case "BrowserReadDom":
       row.verb = "读取页面";
       row.object = tool.description ?? "";

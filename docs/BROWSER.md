@@ -6,6 +6,10 @@ Biny 提供内置浏览器与 Chrome Relay。内置页面适合新的网页任�
 
 内置浏览器由 Desktop 的浏览器执行端管理页面。Agent 将打开、读取和交互请求交给执行端，执行端返回页面文字、定位信息或动作结果；页面的登录态属于内置浏览器自身。`BrowserTabFloat` 可将当前会话拥有的标签显示在置顶窗口或收回工作区；浮窗承载同一可交互页面，操作时避免与 Agent 并发输入。
 
+`BrowserOpen` 在新导航已提交、HTML 已解析后读取页面，不等待延迟脚本和全部图片等子资源；正文和控件均为空时，最多等待 8 秒以观察异步渲染的首份内容。返回最多 12000 字符的正文和可见控件，控件使用短引用，链接附带地址；文字截断时会标明。这不保证所有延迟内容已加载。可以直接根据返回内容回答、跳转或操作，无需固定再读一次。需要更多文字或页面内容改变时，用 `BrowserReadDom` 更新观察，默认同样返回 12000 字符，可通过 `maxCharacters` 增加。
+
+`BrowserOpen` 和 `BrowserReadDom` 返回的 `snapshotId` 与控件 `ref` 可直接交给 `BrowserDOMAction`，不必再取一次快照。新观察、导航、操作或目标变化会使旧引用失效。导航已完成但读取失败时，保留导航的 URL、标题并返回 `observationError`，可以继续读取；取消、导航超时或断连仍按执行边界处理，不自动重放导航。
+
 面板收起时，内置页面保留有效视口，仍可读取和操作。定位或遮挡检查在输入前失败时，返回明确拒绝，Agent 可以重新读取页面后决定下一步；输入途中、输入后核验失败或回复丢失时，结果仍可能未知，需要先检查实际结果，不能自动重放。
 
 Chrome Relay 的链路是：
@@ -30,8 +34,13 @@ Relay 管理配对连接与请求，扩展在目标 Chrome 配置中读取或操
 | 任务 | 入口 |
 | --- | --- |
 | 找资料或读取公开网页 | `WebSearch`、`WebFetch`。 |
+| 批量读取已知网址的浏览器渲染正文 | `BrowserRead`，一次最多八个网址。 |
 | 在 Biny 中打开页面、检查本地预览 | `BrowserOpen`、`BrowserReadDom` 和后续交互工具。 |
 | 使用日常 Chrome 标签或已有登录态 | Chrome Relay。 |
+
+`BrowserRead` 用浏览器渲染并读取已知网址，一次最多八个。它为每个网址打开临时页面，返回标题、最终地址、正文以及页面中的源日期信息，随后关闭临时页面。现有交互标签不变；其中一个网址失败时，其它结果仍会返回。未指定环境时，优先沿用本会话标签的登录环境，其次使用当前项目活动标签的环境，没有标签时使用默认环境。
+
+每页最多等待 15 秒，文字稳定后即可返回，不等待所有图片加载。默认最多返回 16000 字符，截断时会标明；需要更多内容可将 `maxCharacters` 提高到 40000。尚未出现的延迟内容可能不在结果内。该工具只读取公开 HTTP(S) 地址，点击、填写以及本地或私网预览使用 `BrowserOpen`。
 
 两种浏览器有各自的标签和登录态。导入 Cookie 不等于连接已有标签，内置浏览器也不能用来报告用户日常 Chrome 的当前状态。
 
@@ -108,7 +117,7 @@ Chrome 确认框由用户手动处理。`ChromeRelayEval` 可在用户已有 Chr
 
 自动处理页面对话框必须有用户对接受或取消结果的明确授权。授权只对当前文档有效，主页面导航或标签关闭后失效；操作完成后应主动停止。提示框回复不会出现在工具详情中，工具参数及中断回合检查点里的回复文本会脱敏。
 
-Agent 使用 `BrowserOpen` 打开页面，通过 `BrowserReadDom` 读取文字和 selector，再使用点击、输入、按键、选择和勾选工具。模型会话的导航在自己的标签中进行，保留用户正在浏览的页面。选择器支持 CSS、`role=button|Exact name`、`label=Exact label`、`placeholder=Exact placeholder`、`text=Exact text`、`testid=identifier` 与开放 Shadow DOM 的 `host >>> child` 路径。点击、输入、选择和勾选要求唯一、可见、可用且稳定的元素，并检查遮挡；`BrowserWait` 最多等待八秒，可等待元素状态或文档加载。`BrowserBack`、`BrowserForward`、`BrowserReload` 和 `BrowserScroll` 支持常用页面移动；`BrowserViewport` 可设置或重置桌面/移动视口，移动模式也启用触控模拟。`BrowserEval` 可在内置页面执行 JavaScript 表达式，可能改变远端状态，优先使用结构化工具。`BrowserDialogStatus` 只观察页面对话框，`BrowserDialogRespond` 可接受或取消当前对话框，须有用户授权；`BrowserClose` 只关闭当前 Agent 会话拥有的标签。每次交互后重新读取确认。
+Agent 使用 `BrowserOpen` 打开页面，直接使用返回的文字、控件名称和链接；通过短引用执行点击、输入和按键，选择和勾选等操作使用控件名称构成的语义选择器。模型会话的导航在自己的标签中进行，保留用户正在浏览的页面。选择器支持 CSS、`role=button|Exact name`、`label=Exact label`、`placeholder=Exact placeholder`、`text=Exact text`、`testid=identifier` 与开放 Shadow DOM 的 `host >>> child` 路径。点击、输入、选择和勾选要求唯一、可见、可用且稳定的元素，并检查遮挡；`BrowserWait` 最多等待八秒，可等待元素状态或文档加载。`BrowserBack`、`BrowserForward`、`BrowserReload` 和 `BrowserScroll` 支持常用页面移动；`BrowserViewport` 可设置或重置桌面/移动视口，移动模式也启用触控模拟。`BrowserEval` 可在内置页面执行 JavaScript 表达式，可能改变远端状态，优先使用结构化工具。`BrowserDialogStatus` 只观察页面对话框，`BrowserDialogRespond` 可接受或取消当前对话框，须有用户授权；`BrowserClose` 只关闭当前 Agent 会话拥有的标签。每次交互后重新读取确认。
 
 `BrowserClipboardRead` 和 `BrowserClipboardWrite` 操作系统剪贴板，不操作网页内部剪贴板。只在用户明确要求时调用；Agent 工具调用遵循 Biny 权限审批。文本读取最多返回 20,000 个字符并标记是否截断，写入上限为 100,000 个字符。用户要求检查图片时，读取工具可把最多 1 MiB 的 JPEG 作为模型图片返回；不写成文件。剪贴板文本、图片和写入文本不会进入已保存的会话历史及恢复检查点。
 

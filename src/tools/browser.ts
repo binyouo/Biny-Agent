@@ -19,6 +19,7 @@ import { browserCuaSchema, browserDomActionSchema, browserDomSnapshotSchema, typ
 import { browserDialogAutoReplySchema, type BrowserDialogAutoReplyArgs } from "../browser/dialogSchema.js";
 import { browserClipboardReadSchema, browserClipboardWriteSchema, maxBrowserClipboardWriteCharacters } from "../browser/clipboardSchema.js";
 import { browserCdpSchema } from "../browser/cdpSchema.js";
+import { browserReadSchema } from "../browser/readSchema.js";
 import { browserProfileHistorySchema } from "../browser/profileHistorySchema.js";
 import { resolveWorkspacePath } from "../workspace/resolvePath.js";
 import { zodToolInput } from "./zodToolInput.js";
@@ -45,7 +46,9 @@ export interface BrowserDomSnapshot {
   url: string;
   title: string;
   text: string;
-  interactive: Array<{ tag: string; role?: string; name?: string; selector: string }>;
+  truncated: boolean;
+  snapshotId: string;
+  interactive: Array<{ ref: string; role: string; name: string; href?: string }>;
 }
 
 interface BrowserNavigateArgs { url: string; environment?: string }
@@ -67,6 +70,7 @@ interface BrowserDialogRespondArgs { action: "accept" | "dismiss"; text?: string
 
 export function createBrowserTools(endpoint: BrowserAutomationEndpoint, workspace: Pick<ToolContext, "workspaceRoot" | "ignore"> = { workspaceRoot: process.cwd(), ignore: [] }): Tool[] {
   return [
+    createBrowserReadTool(endpoint),
     createBrowserNavigateTool(endpoint),
     createBrowserListEnvironmentsTool(endpoint),
     createBrowserListProfilesTool(endpoint),
@@ -217,7 +221,7 @@ function createBrowserSetCheckedTool(endpoint: BrowserAutomationEndpoint): Tool<
     name: "BrowserSetChecked",
     description: "Set a uniquely located visible checkbox or radio control to the requested checked state.",
     promptSnippet: "Set a browser checkbox state",
-    promptGuidelines: ["Use a selector returned by BrowserReadDom and verify the resulting page state"],
+    promptGuidelines: ["Use a semantic selector based on the observed role and name, and verify the resulting page state"],
     parameters: {
       type: "object",
       properties: {
@@ -394,13 +398,28 @@ function createBrowserTabFloatTool(endpoint: BrowserAutomationEndpoint): Tool<{ 
   };
 }
 
+function createBrowserReadTool(endpoint: BrowserAutomationEndpoint): Tool<z.infer<typeof browserReadSchema>> {
+  return {
+    name: "BrowserRead",
+    description: "Open and read one to eight public HTTP(S) pages in parallel using Biny's browser. Returns each page's title, final URL, bounded visible text and up to 20 source datetime values with nearby context after content appears. Temporary pages close after reading; existing interactive tabs stay in place. Prefer this for facts from known URLs, including JavaScript-rendered pages. Use BrowserOpen for interaction or local/private-network pages, and Chrome Relay for the user's existing Chrome tabs.",
+    promptSnippet: "Read text from up to eight URLs in one browser call",
+    promptGuidelines: ["For independent source URLs, batch them in one BrowserRead call; no separate BrowserOpen or BrowserReadDom is needed.", "BrowserRead returns freshly observed browser content. If it contains the requested facts unambiguously, answer from that evidence; reopen only when information is missing, contradictory, or requires interaction.", "A truncated result may omit information; increase maxCharacters or read a more specific page before concluding it is absent."],
+    ...zodToolInput(browserReadSchema),
+    capability: "browser.read",
+    risk: "read",
+    resolveExecution(args) {
+      return browserExecution(endpoint, "read_pages", args, `Read ${args.urls.length} browser page(s)`);
+    }
+  };
+}
+
 function createBrowserNavigateTool(endpoint: BrowserAutomationEndpoint): Tool<BrowserNavigateArgs> {
   return {
     name: "BrowserOpen",
-    description: "Open or navigate an HTTP or HTTPS page in Biny's browser and return its current page state. For an unfamiliar application name without a URL or explicit web context, discover native apps with ComputerList before choosing a website. Preserve the requested application.",
-    promptSnippet: "Navigate the visible browser to a web page",
+    description: "Open an interactive HTTP(S) tab for clicking, forms, local previews or showing a page to the user. Returns title, URL, up to 12000 characters of current page text and visible controls with short references and link URLs. Use that observation for the next action; read again only if the needed content is missing or the page changes. For facts from independent public URLs, prefer BrowserRead. For an unfamiliar application name without a URL or explicit web context, discover native apps with ComputerList before choosing a website. Preserve the requested application.",
+    promptSnippet: "Open a page and return its text, controls and links together",
     promptGuidelines: [
-      "Use BrowserOpen before BrowserReadDom when the target page is not already open",
+      "BrowserOpen already returns a page observation. Use returned snapshotId and refs with BrowserDOMAction for interaction, and href values for navigation; do not spend another call rereading the same content or evaluating link URLs that are already present",
       "Ask for confirmation before navigation that is part of an external side effect; local development pages are safe to inspect"
     ],
     parameters: {
@@ -416,7 +435,7 @@ function createBrowserNavigateTool(endpoint: BrowserAutomationEndpoint): Tool<Br
     capability: "browser.navigate",
     risk: "read",
     resolveExecution(args) {
-      return browserExecution(endpoint, "navigate", args, `Navigate browser to ${args.url}`);
+      return browserExecution(endpoint, "navigate", { ...args, readDom: true }, `Navigate browser to ${args.url}`);
     }
   };
 }
@@ -472,9 +491,9 @@ function createBrowserProfileHistoryTool(endpoint: BrowserAutomationEndpoint): T
 function createBrowserReadDomTool(endpoint: BrowserAutomationEndpoint): Tool<BrowserReadDomArgs> {
   return {
     name: "BrowserReadDom",
-    description: "Read the Biny built-in browser page title, URL, text and interactive elements. This does not read the user's Chrome, Edge or other external browser tabs.",
+    description: "Read the Biny built-in browser page title, URL, text and interactive elements with short references and link URLs. Reports whether text was truncated. This does not read the user's Chrome, Edge or other external browser tabs.",
     promptSnippet: "Inspect the Biny built-in browser page",
-    promptGuidelines: ["For the user's existing browser or open tabs, use ChromeRelayListTabs then ChromeRelayRead. Never describe a Biny page as the user's daily browser.", "After a page transition or interaction, use BrowserReadDom again to verify the result"],
+    promptGuidelines: ["For the user's existing browser or open tabs, use ChromeRelayListTabs then ChromeRelayRead. Never describe a Biny page as the user's daily browser.", "Read after actions that did not return the needed observation. BrowserOpen already returns one; reread it only for missing or changed content"],
     parameters: {
       type: "object",
       properties: { maxCharacters: { type: "integer", minimum: 1_000, maximum: 100_000, description: "Maximum readable text characters." } },
@@ -484,7 +503,7 @@ function createBrowserReadDomTool(endpoint: BrowserAutomationEndpoint): Tool<Bro
     capability: "browser.read_dom",
     risk: "read",
     resolveExecution(args) {
-      return browserExecution(endpoint, "read_dom", { maxCharacters: args.maxCharacters ?? 24_000 }, "Read the visible browser DOM");
+      return browserExecution(endpoint, "read_dom", { maxCharacters: args.maxCharacters ?? 12_000, compact: true }, "Read the visible browser DOM");
     }
   };
 }
@@ -494,7 +513,7 @@ function createBrowserLocatorReadTool(endpoint: BrowserAutomationEndpoint): Tool
     name: "BrowserLocatorRead",
     description: "Query one or more built-in browser elements with a Playwright-style locator chain without changing the page.",
     promptSnippet: "Query browser elements and inspect their state",
-    promptGuidelines: ["Start from selectors observed with BrowserReadDom. Use count before choosing first, last, or nth when several controls match."],
+    promptGuidelines: ["Use observed control names with semantic locators, or use BrowserDOMAction with returned refs. Put count in action, not in the locator steps. Use count before choosing first, last, or nth when several controls match."],
     ...zodToolInput(browserLocatorReadSchema),
     capability: "browser.read_dom",
     risk: "read",
@@ -524,7 +543,7 @@ function createBrowserDomActionTool(endpoint: BrowserAutomationEndpoint): Tool<B
     name: "BrowserDOMAction",
     description: "Click, type into, or press a key on one visible element from the latest built-in browser DOM snapshot.",
     promptSnippet: "Use a current browser DOM reference",
-    promptGuidelines: ["Use the exact snapshotId and ref from BrowserDOMSnapshot. References expire after one action, navigation, or a changed target; take a fresh snapshot when rejected."],
+    promptGuidelines: ["Use the exact snapshotId and ref from BrowserOpen, BrowserReadDom or BrowserDOMSnapshot. References expire after one action, navigation, or a changed target; take a fresh snapshot when rejected."],
     ...zodToolInput(browserDomActionSchema),
     capability: "browser.click",
     risk: "execute" as const,
@@ -590,7 +609,7 @@ function createBrowserFillTool(endpoint: BrowserAutomationEndpoint): Tool<Browse
     name: "BrowserType",
     description: "Fill one uniquely located visible, enabled browser input, textarea, or contenteditable element. The element must stay stable and unobstructed before input is sent.",
     promptSnippet: "Fill a uniquely located browser form field",
-    promptGuidelines: ["Treat filling a field as transmitting data; confirm before entering sensitive information into an external site", "Use a selector returned by BrowserReadDom or a supported semantic selector; read the page again after filling"],
+    promptGuidelines: ["Treat filling a field as transmitting data; confirm before entering sensitive information into an external site", "Use a semantic selector based on the observed field label or role; read the page again after filling"],
     parameters: {
       type: "object",
       properties: {
@@ -776,7 +795,7 @@ function browserExecution(
     // DesktopBrowserService 当前为一个可见 BrowserWindow；只串行化这个浏览器上下文，
     // 不再用 all() 阻塞文件、终端和其它互不相关的工具。
     accesses: ToolAccesses.browser(endpoint.endpoint),
-    retrySafety: ["read_dom", "wait", "locator_read", "dom_snapshot", "list_profiles", "profile_history"].includes(method) || method === "clipboard" && detail.action === "read" ? "safe" as const : "unsafe" as const,
+    retrySafety: ["read_pages", "read_dom", "wait", "locator_read", "dom_snapshot", "list_profiles", "profile_history"].includes(method) || method === "clipboard" && detail.action === "read" ? "safe" as const : "unsafe" as const,
     display: { kind: "generic" as const, summary: description, detail: browserDisplayDetail(method, detail) },
     description,
     approvalRule: `browser_${method}`,

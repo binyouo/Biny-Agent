@@ -22,7 +22,7 @@ import { assertFetchableUrl, type HostnameResolver } from "../../../tools/web/ad
 import { promisify } from "node:util";
 import { BrowserWindow, WebContentsView, clipboard, session, type WebContents, type Cookie, type CookiesSetDetails } from "electron";
 import { desktopIpc, type DesktopCookieJarStatus, type DesktopBrowserSnapshot, type DesktopBrowserTab, type DesktopBrowserAction, type DesktopBrowserBounds } from "../../protocol.js";
-import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
+import type { BrowserAutomationEndpoint, BrowserDomSnapshot } from "../../../tools/browser.js";
 import { BrowserRelay } from "../../../browser/BrowserRelay.js";
 import { pageOperation as browserPageOperation } from "../../../browser-extension/page.js";
 import { browserRelayFile } from "../../../browser/relayClient.js";
@@ -33,6 +33,8 @@ import { describeBrowserKey } from "../../../browser/keyInput.js";
 import { browserDialogAutoReplySchema } from "../../../browser/dialogSchema.js";
 import { browserClipboardReadSchema, browserClipboardWriteSchema, maxBrowserClipboardImageBytes, maxBrowserClipboardReadCharacters } from "../../../browser/clipboardSchema.js";
 import { browserCdpSchema } from "../../../browser/cdpSchema.js";
+import { browserReadSchema } from "../../../browser/readSchema.js";
+import { loadUntilDomReady } from "./browserPageRead.js";
 import { googleWorkspaceExportFormats, googleWorkspaceExportUrl } from "../../../browser/googleWorkspaceExport.js";
 import { extractReadableHtml } from "../../../tools/web/html.js";
 import { prepareBrowserExtension } from "../../../browser/extensionAssets.js";
@@ -70,7 +72,7 @@ const browserActionSchema = z.discriminatedUnion("type", [
 interface EmbeddedTab { view: WebContentsView; state: DesktopBrowserTab; navigation: number; inspection: number; agentSessionId?: string; popup?: BrowserWindow }
 interface EmbeddedProject { revision: number; tabs: Map<string, EmbeddedTab>; activeId?: string }
 type BrowserActionTarget = (contents: WebContents) => void;
-interface BrowserDomSnapshotTarget { tag: string; role?: string; name: string; selector: string; box: { x: number; y: number; width: number; height: number } }
+interface BrowserDomSnapshotTarget { tag: string; role?: string; name: string; selector: string; href?: string; box: { x: number; y: number; width: number; height: number } }
 interface BrowserDomSnapshotReferences { id: string; url: string; elements: Map<string, BrowserDomSnapshotTarget> }
 interface BrowserDialogWatcher { close(): void; dialog?: Record<string, unknown>; autoReply?: { behavior: "accept" | "dismiss"; text?: string }; autoReplyPending?: boolean; autoReplyError?: string }
 
@@ -585,14 +587,15 @@ export class DesktopBrowserService {
     await this.openPage(url, requiredEnvironment);
   }
 
-  private async openPage(url?: string, requiredEnvironment?: "default"): Promise<WebContents> {
+  private async openPage(url?: string, requiredEnvironment?: "default", waitForDom = false, signal?: AbortSignal): Promise<WebContents> {
     const target = url ?? homeUrl;
     if (!isHttpUrl(target)) throw new Error("Browser navigation only supports HTTP and HTTPS URLs.");
     const shown = this.shownBrowser;
     const embedded = shown && this.embeddedProjects.get(shown.projectId)?.tabs.get(shown.tabId);
     if (embedded && !embedded.view.webContents.isDestroyed() && (!requiredEnvironment || embedded.state.environmentId === requiredEnvironment)) {
       this.automationContents = embedded.view.webContents;
-      await embedded.view.webContents.loadURL(target);
+      if (waitForDom) await loadUntilDomReady(embedded.view.webContents, target, signal, () => this.evaluate("document.readyState", signal, embedded.view.webContents));
+      else await embedded.view.webContents.loadURL(target);
       this.browserSessionManaged = true;
       return embedded.view.webContents;
     }
@@ -602,7 +605,8 @@ export class DesktopBrowserService {
       window.show();
       window.focus();
       this.automationContents = window.webContents;
-      await window.loadURL(target);
+      if (waitForDom) await loadUntilDomReady(window.webContents, target, signal, () => this.evaluate("document.readyState", signal, window.webContents));
+      else await window.loadURL(target);
       this.browserSessionManaged = true;
       return window.webContents;
     }
@@ -640,7 +644,8 @@ export class DesktopBrowserService {
       if (this.browserSessionManaged) void this.syncToJar().catch(() => undefined);
     });
     window.once("ready-to-show", () => window.show());
-    await window.loadURL(target);
+    if (waitForDom) await loadUntilDomReady(window.webContents, target, signal, () => this.evaluate("document.readyState", signal, window.webContents));
+    else await window.loadURL(target);
     this.browserSessionManaged = true;
     return window.webContents;
   }
@@ -879,7 +884,7 @@ export class DesktopBrowserService {
       const xiaohongshu = args.engine === "xiaohongshu" && !requestedEnvironment;
       const partition = xiaohongshu ? xiaohongshuPartition : browserPartitionForEnvironment(environmentId);
       if (!xiaohongshu) {
-        await this.prepareBrowserEnvironment(environmentId);
+        await Promise.race([this.prepareBrowserEnvironment(environmentId), interrupted]);
         this.requireBrowserEnvironment(environmentId);
       }
       controller.signal.throwIfAborted();
@@ -907,6 +912,29 @@ export class DesktopBrowserService {
       page.setWindowOpenHandler(() => ({ action: "deny" }));
       this.guardedPages.set(page.id, { allowPrivateNetwork, reject: (error) => controller.abort(error) });
       const work = async (): Promise<unknown> => {
+        if (args.engine === "browser") {
+          await loadUntilDomReady(page, target.href, controller.signal, () => this.evaluate("document.readyState", controller.signal, page));
+          const maxCharacters = readNumber(args.maxCharacters, 16_000, 40_000);
+          let previousText: string | undefined;
+          for (;;) {
+            controller.signal.throwIfAborted();
+            const snapshot = await this.evaluate(`(() => {
+              const root = document.querySelector('main, [role="main"]') || document.body;
+              const text = (root?.innerText || '').trim();
+              const ready = !!text && !/^(loading|please wait|加载中|正在加载|请稍候)[.\\s…!。]*$/i.test(text);
+              const dates = [...document.querySelectorAll('time[datetime], relative-time[datetime]')].slice(0, 20).map(node => ({ datetime: node.getAttribute('datetime').slice(0, 120), context: (node.parentElement?.innerText || '').trim().slice(0, 200) }));
+              return { ready, text: text.slice(0, ${maxCharacters}), dates, truncated: text.length > ${maxCharacters}, url: location.href, title: document.title.slice(0, 4096) };
+            })()`, controller.signal, page) as { ready: boolean; text: string; dates: Array<{ datetime: string; context: string }>; truncated: boolean; url: string; title: string };
+            // 连续两次内容一致后返回，减少短暂空壳和分段渲染引发的额外读取。
+            if (snapshot.ready && snapshot.text === previousText) {
+              await assertFetchableUrl(new URL(snapshot.url), { allowPrivateNetwork, resolveHostname: this.resolveWebHostname });
+              if (status >= 400) throw new Error(`网页返回 HTTP ${status}。`);
+              return { url: snapshot.url, title: snapshot.title, text: snapshot.text, dates: snapshot.dates, truncated: snapshot.truncated };
+            }
+            previousText = snapshot.ready ? snapshot.text : undefined;
+            await delay(200, undefined, { signal: controller.signal });
+          }
+        }
         await page.loadURL(target.href);
         type WebReadPollResult = { ready: false } | { ready: true; html: string; body: string; finalUrl: string; title: string; contentType: string; truncatedAtByteLimit: boolean; googleChallenge?: boolean };
         let result: WebReadPollResult;
@@ -963,6 +991,24 @@ export class DesktopBrowserService {
   }
 
   private async executeAutomation(method: string, args: Record<string, unknown>, signal?: AbortSignal, onAction?: BrowserActionTarget): Promise<unknown> {
+    if (method === "read_pages") {
+      const parsed = browserReadSchema.parse({ urls: args.urls, environment: args.environment, maxCharacters: args.maxCharacters });
+      const group = typeof args.projectId === "string" ? this.embeddedProjects.get(args.projectId) : undefined;
+      const owned = typeof args.sessionId === "string" ? [...(group?.tabs.values() ?? [])].find(tab => tab.agentSessionId === args.sessionId) : undefined;
+      const environment = parsed.environment ?? owned?.state.environmentId ?? group?.tabs.get(group.activeId ?? "")?.state.environmentId ?? "default";
+      const readSignal = signal ?? new AbortController().signal;
+      // 每页自行捕获错误并清理；批次取消也等全部 finally 完成后才释放队列。
+      const pages = await Promise.all(parsed.urls.map(async url => {
+        try {
+          return await this.readWebPage({ url, environment, maxCharacters: parsed.maxCharacters, engine: "browser" }, readSignal) as { url: string; title: string; text: string; dates: Array<{ datetime: string; context: string }>; truncated: boolean };
+        } catch (error) {
+          return { url, error: error instanceof Error ? error.message : String(error) };
+        }
+      }));
+      readSignal.throwIfAborted();
+      if (pages.every(page => "error" in page)) throw new Error(pages.map(page => `${page.url}: ${page.error}`).join("\n"));
+      return { pages };
+    }
     if (method === "list_environments") return this.browserEnvironments.list().map(({ id, name, color }) => ({ id, name, color }));
     if (method === "list_profiles") return (await this.listProfiles()).map(({ id, appName, profileName }) => ({ id, appName, profileName }));
     if (method === "profile_history") {
@@ -1003,6 +1049,7 @@ export class DesktopBrowserService {
     }
     if (method === "navigate") {
       const url = readString(args.url, "url");
+      const observe = args.readDom === true;
       if (!isHttpUrl(url)) throw new Error("Browser navigation only supports HTTP and HTTPS URLs.");
       const requestedEnvironment = typeof args.environment === "string" ? args.environment : undefined;
       const selectedProject = [...this.embeddedProjects].find(([, group]) => [...group.tabs.values()].some(tab => tab.view.webContents === this.automationContents));
@@ -1028,17 +1075,25 @@ export class DesktopBrowserService {
         if (sessionId) tab.agentSessionId = sessionId;
         contents = tab.view.webContents;
         this.automationContents = contents;
-        await tab.view.webContents.loadURL(url);
+        if (observe) await loadUntilDomReady(contents, url, signal, () => this.evaluate("document.readyState", signal, contents));
+        else await contents.loadURL(url);
         this.browserSessionManaged ||= environment.id === "default";
       } else if (environment.id === "default") {
-        contents = await this.openPage(url, requestedEnvironment ? "default" : undefined);
+        contents = await this.openPage(url, requestedEnvironment ? "default" : undefined, observe, signal);
       } else {
-        contents = await this.openInEnvironmentWindow(url, environment.id);
+        contents = await this.openInEnvironmentWindow(url, environment.id, observe, signal);
       }
       // Selection may change through UI IPC while loadURL is pending. Report
       // the page we actually navigated without restoring an older selection.
       onAction?.(contents);
-      return await this.pageState(contents);
+      if (!observe) return await this.pageState(contents);
+      const navigation = { url: contents.getURL(), title: contents.getTitle() };
+      try {
+        return await this.readDom(12_000, signal, contents, { waitForContent: true, compact: true });
+      } catch (error) {
+        signal?.throwIfAborted();
+        return { ...navigation, observationError: error instanceof Error ? error.message : String(error) };
+      }
     }
     if (method === "screenshot") return await this.screenshot(args, signal);
     if (method === "float") {
@@ -1177,16 +1232,7 @@ export class DesktopBrowserService {
           box: z.object({ x: z.number().finite(), y: z.number().finite(), width: z.number().finite().positive(), height: z.number().finite().positive() }).strict()
         }).strict()).max(200)
       }).strict().parse(await this.pageOperation("dom_snapshot", {}, signal, contents));
-      const snapshotId = randomUUID();
-      const elements = new Map<string, BrowserDomSnapshotTarget>();
-      const refs = parsed.elements.map((element, index) => {
-        const ref = `e${index + 1}`;
-        elements.set(ref, element);
-        return { ref, tag: element.tag, role: element.role, name: element.name, box: element.box };
-      });
-      this.domSnapshots.set(contents, { id: snapshotId, url: parsed.url, elements });
-      this.watchDomSnapshotNavigation(contents);
-      return { snapshotId, url: parsed.url, title: parsed.title, elements: refs };
+      return { ...this.rememberDomSnapshot(contents, parsed.url, parsed.elements), url: parsed.url, title: parsed.title };
     }
     if (method === "dom_action") {
       const parsed = browserDomActionSchema.parse({ snapshotId: args.snapshotId, ref: args.ref, action: args.action });
@@ -1215,7 +1261,7 @@ export class DesktopBrowserService {
       await this.pageOperation("wait", { selector: action.selector, state: "visible", timeoutMs: 8_000 }, signal, contents);
       return await this.pageOperation(method, action, signal, contents, onAction);
     }
-    if (method === "read_dom") return await this.readDom(readNumber(args.maxCharacters, 24_000, 100_000), signal, contents);
+    if (method === "read_dom") return await this.readDom(readNumber(args.maxCharacters, 24_000, 100_000), signal, contents, { compact: args.compact === true });
     if (method === "wait") return await this.waitForPage(args, signal, contents);
     if (method === "click") return await this.click(readString(args.selector, "selector"), signal, onAction, contents);
     if (method === "fill") return await this.fill(readString(args.selector, "selector"), readString(args.value, "value"), signal, onAction, contents);
@@ -1372,7 +1418,7 @@ export class DesktopBrowserService {
     return current;
   }
 
-  private async openInEnvironmentWindow(url: string, environmentId: string): Promise<WebContents> {
+  private async openInEnvironmentWindow(url: string, environmentId: string, waitForDom = false, signal?: AbortSignal): Promise<WebContents> {
     this.requireBrowserEnvironment(environmentId);
     const partition = browserPartitionForEnvironment(environmentId);
     let window = this.environmentWindows.get(environmentId);
@@ -1389,7 +1435,8 @@ export class DesktopBrowserService {
       window.show(); window.focus();
     }
     this.automationContents = window.webContents;
-    await window.loadURL(url);
+    if (waitForDom) await loadUntilDomReady(window.webContents, url, signal, () => this.evaluate("document.readyState", signal, window.webContents));
+    else await window.loadURL(url);
     return window.webContents;
   }
 
@@ -1399,8 +1446,32 @@ export class DesktopBrowserService {
     return { url: readString(state.url, "url"), title: typeof state.title === "string" ? state.title : "" };
   }
 
-  private async readDom(maxCharacters: number, signal?: AbortSignal, contents?: WebContents): Promise<unknown> {
-    return await this.pageOperation("read", { maxCharacters }, signal, contents);
+  private rememberDomSnapshot(contents: WebContents, url: string, targets: BrowserDomSnapshotTarget[]) {
+    const snapshotId = randomUUID();
+    const elements = new Map<string, BrowserDomSnapshotTarget>();
+    const refs = targets.map((target, index) => {
+      const ref = `e${index + 1}`;
+      elements.set(ref, target);
+      const { selector: _selector, ...element } = target;
+      return { ref, ...element };
+    });
+    this.domSnapshots.set(contents, { id: snapshotId, url, elements });
+    this.watchDomSnapshotNavigation(contents);
+    return { snapshotId, elements: refs };
+  }
+
+  private async readDom(maxCharacters: number, signal?: AbortSignal, contents?: WebContents, options: { waitForContent?: boolean; compact?: boolean } = {}) {
+    const owner = contents ?? await this.ensureContents();
+    const deadline = Date.now() + (options.waitForContent ? 8_000 : 0);
+    for (;;) {
+      const snapshot = await this.pageOperation("read", { maxCharacters, includeBounds: options.compact }, signal, owner) as Omit<BrowserDomSnapshot, "snapshotId" | "interactive"> & { interactive: BrowserDomSnapshotTarget[] };
+      if (!options.waitForContent || snapshot.text.trim() || snapshot.interactive.length || Date.now() >= deadline) {
+        if (!options.compact) return snapshot;
+        const { snapshotId, elements } = this.rememberDomSnapshot(owner, snapshot.url, snapshot.interactive);
+        return { ...snapshot, snapshotId, interactive: elements.map(({ ref, tag, role, name, href }) => ({ ref, role: role || tag, name, href })) } satisfies BrowserDomSnapshot;
+      }
+      await delay(200, undefined, { signal });
+    }
   }
 
   private async click(selector: string, signal?: AbortSignal, onAction?: BrowserActionTarget, contents?: WebContents, clickCount = 1): Promise<unknown> {

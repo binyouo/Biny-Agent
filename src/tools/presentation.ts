@@ -49,6 +49,7 @@ const toolPresentations: Record<string, ToolPresentation> = {
   skill_call: { label: "技能调用", selectable: false },
   WebFetch: { group: "web", label: "网络获取", detail: "抓取 URL 的原始内容。" },
   WebSearch: { group: "web", label: "网络搜索", detail: "在网上搜索最新信息。" },
+  BrowserRead: { group: "browser", label: "读取网址", detail: "同时读取最多八个网址的正文，完成后关闭临时页面。" },
   BrowserOpen: { group: "browser", label: "打开网页", detail: "在 Biny 浏览器中打开网页。" },
   BrowserListEnvironments: { group: "browser", label: "列出浏览器环境", detail: "查看可选的独立登录环境。" },
   BrowserListProfiles: { group: "browser", label: "列出浏览器配置", detail: "查看本机可用的浏览器配置。", selectable: false },

@@ -102,9 +102,10 @@ export async function pageOperation(operation, args, backendElement) {
   };
   if (operation === "read") {
     const scopes = roots(document);
+    const text = scopes.map((root) => root === document ? document.body?.innerText || "" : root.textContent || "").join("\n");
     return { url: location.href, title: document.title.slice(0, 4096),
-      text: scopes.map((root) => root === document ? document.body?.innerText || "" : root.textContent || "").join("\n").slice(0, args.maxCharacters ?? 24000),
-      interactive: scopes.flatMap((root) => [...root.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]')]).filter(visible).slice(0, 200).map((node) => ({ tag: node.tagName.toLowerCase(), role: role(node) || undefined, name: name(node).slice(0, 120), selector: path(node) })) };
+      text: text.slice(0, args.maxCharacters ?? 24000), truncated: text.length > (args.maxCharacters ?? 24000),
+      interactive: scopes.flatMap((root) => [...root.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]')]).filter(visible).slice(0, 200).map((node) => ({ tag: node.tagName.toLowerCase(), role: role(node) || undefined, name: name(node).slice(0, 120), selector: path(node), href: node instanceof HTMLAnchorElement ? node.href : undefined, box: args.includeBounds ? domBox(node) : undefined })) };
   }
   if (operation === "dom_snapshot") {
     const scopes = roots(document);
