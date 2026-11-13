@@ -88,10 +88,10 @@ async function loginFixture(t: TestContext) {
   replace(window, "WebSocket", function () { return unexpected("WebSocket"); });
   replace(window, "biny", new Proxy({}, { get: (_target, key) => unexpected(`IPC ${String(key)}`) }));
   const context: SettingsDraftContextValue = {
-    loading: false, revalidating: false, dirtyCount: 0, preferencesOnly: false, invalid: false, saveState: "clean",
+    loading: false, revalidating: false, runtimeBlocked: false, manualSaving: false, dirtyCount: 0, preferencesOnly: false, invalid: false, saveState: "clean",
     retryLoad: unavailable, setThemePreference: unavailable, setFontPreference: unavailable,
     updateActivityImmediately: unavailable,
-    setIdentity: unavailable, setMemory: unavailable, setCompaction: unavailable, setChatParams: unavailable,
+    setIdentity: unavailable, setRedaction: unavailable, setMemory: unavailable, setCompaction: unavailable, setChatParams: unavailable,
     setSubagent: unavailable, setPermission: unavailable, setWebSearch: unavailable, setChat: unavailable,
     setSkills: unavailable, upsertModel: unavailable, removeModel: unavailable, setModelProfile: unavailable,
     stageCredential: unavailable, discard: unavailable, saveAll: unavailable,
