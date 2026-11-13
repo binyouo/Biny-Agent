@@ -66,6 +66,7 @@ export function McpServersView({ projectId, onError, onSuccess, onCapabilitiesCh
   const catalogRequestRef = useRef(0);
   const testRequestRef = useRef(0);
   const saveEditorRef = useRef(0);
+  const clipboardRequestRef = useRef(0);
   const saveProjectRef = useRef<{ projectId: string | undefined } | undefined>(undefined);
   const detailHostAvailable = useContext(SettingsDetailHostContext) !== null;
 
@@ -76,10 +77,11 @@ export function McpServersView({ projectId, onError, onSuccess, onCapabilitiesCh
 
   useLayoutEffect(() => {
     setTestResult(undefined);
-    // 测试结果只属于当前编辑草稿；关闭、改值或离开页面只撤销展示权，不取消后端测试。
+    // 编辑相关回执随草稿退休；撤销展示/关闭权，不取消已发起操作或隐藏保存结果。
     return () => {
       testRequestRef.current += 1;
       saveEditorRef.current += 1;
+      clipboardRequestRef.current += 1;
     };
   }, [detailHostAvailable, draft, formOpen, projectId]);
 
@@ -224,8 +226,10 @@ export function McpServersView({ projectId, onError, onSuccess, onCapabilitiesCh
   }, [onError, onSuccess, projectId, snapshot, updateSnapshot]);
 
   const importClipboard = useCallback(async (): Promise<void> => {
+    const request = ++clipboardRequestRef.current;
     try {
       const raw = await navigator.clipboard.readText();
+      if (request !== clipboardRequestRef.current) return;
       const parsed = JSON.parse(raw) as unknown;
       const imported = parseClipboardConfig(parsed);
       if (!imported) throw new Error("剪贴板中没有可识别的 MCP 配置。");
@@ -235,7 +239,7 @@ export function McpServersView({ projectId, onError, onSuccess, onCapabilitiesCh
       setFormOpen(true);
       onSuccess("已从剪贴板导入 MCP 配置，请检查后保存。");
     } catch (error) {
-      onError(errorMessage(error));
+      if (request === clipboardRequestRef.current) onError(errorMessage(error));
     }
   }, [onError, onSuccess]);
 
