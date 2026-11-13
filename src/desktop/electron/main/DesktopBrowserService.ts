@@ -133,6 +133,7 @@ export class DesktopBrowserService {
   private desktopWindow: BrowserWindow | undefined;
   private readonly embeddedProjects = new Map<string, EmbeddedProject>();
   private readonly environmentWindows = new Map<string, BrowserWindow>();
+  private readonly environmentUpdateTails = new Map<string, Promise<unknown>>();
   private readonly proxyReady = new Map<string, Promise<void>>();
   private readonly deletingBrowserEnvironments = new Set<string>();
   private automationContents: WebContents | undefined;
@@ -176,18 +177,28 @@ export class DesktopBrowserService {
 
   async updateBrowserEnvironment(id: string, input: BrowserEnvironmentInput) {
     this.assertCookieMutationAllowed();
-    const previous = this.browserEnvironments.get(id);
-    if (!previous || id === "default") throw new Error("浏览器环境不存在或不可修改。");
-    const updated = await this.browserEnvironments.update(id, input);
-    this.proxyReady.delete(id);
-    try { await this.applyBrowserEnvironmentProxy(id); }
-    catch (error) {
-      await this.browserEnvironments.update(id, { name: previous.name, proxy: previous.proxy });
+    const pending = this.environmentUpdateTails.get(id) ?? Promise.resolve();
+    const update = pending.catch(() => undefined).then(async () => {
+      // Waiting for another update can cross a recovery/readiness boundary.
+      this.assertCookieMutationAllowed();
+      const previous = this.browserEnvironments.get(id);
+      if (!previous || id === "default") throw new Error("浏览器环境不存在或不可修改。");
+      const updated = await this.browserEnvironments.update(id, input);
       this.proxyReady.delete(id);
-      await this.applyBrowserEnvironmentProxy(id).catch(() => undefined);
-      throw error;
+      try { await this.applyBrowserEnvironmentProxy(id); }
+      catch (error) {
+        await this.browserEnvironments.update(id, { name: previous.name, proxy: previous.proxy });
+        this.proxyReady.delete(id);
+        await this.applyBrowserEnvironmentProxy(id).catch(() => undefined);
+        throw error;
+      }
+      return updated;
+    });
+    this.environmentUpdateTails.set(id, update);
+    try { return await update; }
+    finally {
+      if (this.environmentUpdateTails.get(id) === update) this.environmentUpdateTails.delete(id);
     }
-    return updated;
   }
 
   async deleteBrowserEnvironment(id: string): Promise<void> {
