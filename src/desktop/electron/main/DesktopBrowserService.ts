@@ -133,7 +133,7 @@ export class DesktopBrowserService {
   private desktopWindow: BrowserWindow | undefined;
   private readonly embeddedProjects = new Map<string, EmbeddedProject>();
   private readonly environmentWindows = new Map<string, BrowserWindow>();
-  private readonly environmentUpdateTails = new Map<string, Promise<unknown>>();
+  private readonly environmentSaveTails = new Map<string, Promise<unknown>>();
   private readonly proxyReady = new Map<string, Promise<void>>();
   private readonly deletingBrowserEnvironments = new Set<string>();
   private automationContents: WebContents | undefined;
@@ -169,18 +169,19 @@ export class DesktopBrowserService {
 
   async createBrowserEnvironment(input: BrowserEnvironmentInput) {
     this.assertCookieMutationAllowed();
-    const environment = await this.browserEnvironments.create(input);
-    try { await this.applyBrowserEnvironmentProxy(environment.id); }
-    catch (error) { await this.browserEnvironments.delete(environment.id); throw error; }
-    return environment;
+    // Reserve and register ownership before the store can expose the new ID.
+    const id = randomUUID();
+    return await this.queueBrowserEnvironmentSave(id, async () => {
+      const environment = await this.browserEnvironments.create(input, id);
+      try { await this.applyBrowserEnvironmentProxy(id); }
+      catch (error) { await this.browserEnvironments.delete(id); throw error; }
+      return environment;
+    });
   }
 
   async updateBrowserEnvironment(id: string, input: BrowserEnvironmentInput) {
     this.assertCookieMutationAllowed();
-    const pending = this.environmentUpdateTails.get(id) ?? Promise.resolve();
-    const update = pending.catch(() => undefined).then(async () => {
-      // Waiting for another update can cross a recovery/readiness boundary.
-      this.assertCookieMutationAllowed();
+    return await this.queueBrowserEnvironmentSave(id, async () => {
       const previous = this.browserEnvironments.get(id);
       if (!previous || id === "default") throw new Error("浏览器环境不存在或不可修改。");
       const updated = await this.browserEnvironments.update(id, input);
@@ -194,10 +195,18 @@ export class DesktopBrowserService {
       }
       return updated;
     });
-    this.environmentUpdateTails.set(id, update);
+  }
+
+  private async queueBrowserEnvironmentSave<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const pending = this.environmentSaveTails.get(id) ?? Promise.resolve();
+    const update = pending.catch(() => undefined).then(async () => {
+      this.assertCookieMutationAllowed();
+      return await operation();
+    });
+    this.environmentSaveTails.set(id, update);
     try { return await update; }
     finally {
-      if (this.environmentUpdateTails.get(id) === update) this.environmentUpdateTails.delete(id);
+      if (this.environmentSaveTails.get(id) === update) this.environmentSaveTails.delete(id);
     }
   }
 

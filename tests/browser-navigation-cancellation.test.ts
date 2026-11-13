@@ -115,16 +115,16 @@ async function fixture(route: Route) {
   const store = {
     get: (id: string) => definitions.get(id),
     list: () => [...definitions.values()],
-    async create() { const item = { id: customId, name: "Synthetic", color: "#000000", proxy: { mode: "direct" as const } }; definitions.set(item.id, item); return item; },
+    async create(_input: unknown, reservedId = customId) { const item = { id: reservedId, name: "Synthetic", color: "#000000", proxy: { mode: "direct" as const } }; definitions.set(item.id, item); return item; },
     async update(id: string) { return definitions.get(id)!; },
     async delete(id: string) { definitions.delete(id); }
   };
   const browser = new DesktopBrowserService(async () => "unused-fixture-cookie-jar.json", undefined, undefined,
     store as unknown as ConstructorParameters<typeof DesktopBrowserService>[3]);
   const internal = browser as unknown as Internal;
-  await browser.createBrowserEnvironment({ name: "Synthetic", proxy: { mode: "direct" } });
+  const environment = await browser.createBrowserEnvironment({ name: "Synthetic", proxy: { mode: "direct" } });
   assert.equal(internal.proxyReady.size, 0, "creation leaves a genuine initial preparation boundary");
-  const args: Record<string, unknown> = { environment: customId, url: "https://example.invalid/cancelled-navigation" };
+  const args: Record<string, unknown> = { environment: environment.id, url: "https://example.invalid/cancelled-navigation" };
   if (route.startsWith("embedded")) {
     const host = new FakeWindow({});
     browser.attachDesktopWindow(host as unknown as Parameters<typeof browser.attachDesktopWindow>[0]);
@@ -132,7 +132,7 @@ async function fixture(route: Route) {
   }
   if (route.endsWith("reuse")) {
     await internal.executeAutomation("navigate", { ...args, url: "https://example.invalid/original" });
-    await browser.updateBrowserEnvironment(customId, { name: "Synthetic", proxy: { mode: "direct" } });
+    await browser.updateBrowserEnvironment(environment.id, { name: "Synthetic", proxy: { mode: "direct" } });
     assert.equal(internal.proxyReady.size, 0, "public proxy updates invalidate completed preparation");
   }
   state.events.length = 0;
@@ -215,9 +215,10 @@ for (const stage of ["setProxy", "closeAllConnections"] as const) test(`preparat
     assert.equal(navigationCount(), 0); assert.equal(allocations(), 0);
   } finally { await f.close(); }
 });
-for (const environment of ["default", customId] as const) test(`abort at already-ready preparation: ${environment}`, testOptions, async () => {
+for (const kind of ["default", "custom"] as const) test(`abort at already-ready preparation: ${kind}`, testOptions, async () => {
   const f = await fixture("window-new");
   try {
+    const environment = kind === "default" ? "default" : String(f.args.environment);
     await f.browser.prepareBrowserEnvironment(environment);
     const caller = new AbortController();
     const result = f.internal.executeAutomation("navigate", { ...f.args, environment }, caller.signal);
