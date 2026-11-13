@@ -65,12 +65,22 @@ export function McpServersView({ projectId, onError, onSuccess, onCapabilitiesCh
   const snapshotRequestRef = useRef(0);
   const catalogRequestRef = useRef(0);
   const testRequestRef = useRef(0);
+  const saveEditorRef = useRef(0);
+  const saveProjectRef = useRef<{ projectId: string | undefined } | undefined>(undefined);
   const detailHostAvailable = useContext(SettingsDetailHostContext) !== null;
+
+  useLayoutEffect(() => {
+    saveProjectRef.current = { projectId };
+    return () => { saveProjectRef.current = undefined; };
+  }, [projectId]);
 
   useLayoutEffect(() => {
     setTestResult(undefined);
     // 测试结果只属于当前编辑草稿；关闭、改值或离开页面只撤销展示权，不取消后端测试。
-    return () => { testRequestRef.current += 1; };
+    return () => {
+      testRequestRef.current += 1;
+      saveEditorRef.current += 1;
+    };
   }, [detailHostAvailable, draft, formOpen, projectId]);
 
   const applySnapshot = useCallback((next: DesktopMcpSnapshot): void => {
@@ -231,20 +241,31 @@ export function McpServersView({ projectId, onError, onSuccess, onCapabilitiesCh
 
   const saveDraft = useCallback(async (): Promise<void> => {
     if (!snapshot) return;
+    const editor = saveEditorRef.current;
+    const project = saveProjectRef.current;
     try {
       const nextDraft = toProtocolDraft(draft);
       setBusyName(draft.name.trim());
       const next = await window.biny.mcpUpsertServer(projectId, editingName, nextDraft, snapshot.configRevision);
-      updateSnapshot(next);
-      setFormOpen(false);
-      setTestResult(undefined);
+      // Persistence still completed even if its editor was replaced. Never apply
+      // the old project's runtime projection to a new project or an unmounted view.
+      if (project && saveProjectRef.current === project) updateSnapshot(next);
+      else {
+        if (next.saved?.runtimeRefresh !== "not_needed") onCapabilitiesChanged?.();
+        if (next.saved?.message) onError(next.saved.message);
+      }
+      if (editor === saveEditorRef.current) {
+        setFormOpen(false);
+        setTestResult(undefined);
+      }
       onSuccess(editingName ? "MCP 服务器已保存。" : "MCP 服务器已添加。");
     } catch (error) {
       onError(errorMessage(error));
     } finally {
+      // Editing retires the presentation owner, not the in-flight save's busy state.
       setBusyName(undefined);
     }
-  }, [draft, editingName, onError, onSuccess, projectId, snapshot, updateSnapshot]);
+  }, [draft, editingName, onCapabilitiesChanged, onError, onSuccess, projectId, snapshot, updateSnapshot]);
 
   const testDraft = useCallback(async (): Promise<void> => {
     const requestId = ++testRequestRef.current;
