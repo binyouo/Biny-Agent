@@ -268,8 +268,14 @@ export class DesktopStateStore {
 
   /** QuickChat 偏好是纯 UI 开关，逐字段直达落盘，不走设置事务的 CAS/revision。 */
   async setQuickChatSettings(settings: DesktopQuickChatSettings): Promise<void> {
-    this.state.quickChat = normalizeQuickChatSettings(settings);
-    await this.save();
+    const quickChat = normalizeQuickChatSettings(settings);
+    const snapshot = structuredClone(this.state);
+    await this.enqueueWrite(async () => {
+      const { revision, ...preferences } = this.settingsPreferences();
+      await this.writeSnapshot({ ...snapshot, ...preferences, preferenceRevision: revision, quickChat });
+      // Publish only after persistence succeeds, without replacing newer ordinary fields.
+      this.state.quickChat = quickChat;
+    });
   }
 
   quickChatBounds(): DesktopWindowBounds | undefined {
@@ -317,7 +323,7 @@ export class DesktopStateStore {
         return previous;
       }
       const preferenceRevision = previous.revision + 1;
-      await this.writeSnapshot({ ...snapshot, themePreference, fontPreference, preferenceRevision });
+      await this.writeSnapshot({ ...snapshot, themePreference, fontPreference, preferenceRevision, quickChat: this.quickChatSettings() });
       // Only commit our fields: ordinary mutations may have arrived during the I/O.
       this.state.themePreference = themePreference;
       this.state.fontPreference = { ...fontPreference };
@@ -354,7 +360,7 @@ export class DesktopStateStore {
     const snapshot = structuredClone(this.state);
     return this.enqueueWrite(async () => {
       const { revision, ...preferences } = this.settingsPreferences();
-      await this.writeSnapshot({ ...snapshot, ...preferences, preferenceRevision: revision });
+      await this.writeSnapshot({ ...snapshot, ...preferences, preferenceRevision: revision, quickChat: this.quickChatSettings() });
     });
   }
 
