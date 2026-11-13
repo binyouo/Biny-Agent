@@ -1274,7 +1274,7 @@ function LoginProviderPanel({
             />
             <div className="login-code-actions">
               <button className="settings-action settings-primary-button" disabled={!authorizationCode.trim() || stage === "submitted"} onClick={onSubmit} type="button">提交授权码</button>
-              <button className="settings-action settings-secondary-button" onClick={onStart} type="button">重新开始登录</button>
+              <button className="settings-action settings-secondary-button" onClick={onRelogin} type="button">重新开始登录</button>
             </div>
           </div>
         ) : null}
