@@ -83,7 +83,7 @@ test("checkpoint during snapshot creation cannot omit already committed cookies"
     checkpoint();
     return await originalBackup(...args);
   });
- 
+
   const result = await readBrowserProfileCookies(f.profile, "synthetic-unused");
   assert.equal(checkpoints, 1);
   await f.unchangedAndClean();
@@ -104,7 +104,7 @@ for (const failureAt of ["backup", "copy-open"] as const) test(`${failureAt} fai
     await fs.unlink(String(args[1]));
     return result;
   });
- 
+
   if (failureAt === "backup") await assert.rejects(readBrowserProfileCookies(f.profile, "synthetic-unused"), error => error === failure);
   else await assert.rejects(readBrowserProfileCookies(f.profile, "synthetic-unused"));
   const closedSource = sourceConnection;
