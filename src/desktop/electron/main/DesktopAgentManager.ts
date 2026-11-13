@@ -593,8 +593,11 @@ export class DesktopAgentManager {
           if (sessionEvents.length > 4_000) sessionEvents.splice(0, sessionEvents.length - 4_000);
           projectEvents.set(event.sessionId, sessionEvents);
         }
-        if (isTerminalRunEvent(event) && this.state.selectedSessionId(projectId) !== event.sessionId) {
+        if (isTerminalRunEvent(event) && (this.state.activeProjectId() !== projectId || this.state.selectedSessionId(projectId) !== event.sessionId)) {
           void this.projects.updateSessionMetadata(this.projects.requireProject(projectId), event.sessionId, { unread: true }).catch(() => undefined);
+        }
+        // Remembered selection still owns its Host claim, even in a background project.
+        if (isTerminalRunEvent(event) && this.state.selectedSessionId(projectId) !== event.sessionId) {
           if (update.snapshot.state.kind === "idle") {
             void runtime.releaseSessionClaim(event.sessionId).catch(() => undefined);
           }
