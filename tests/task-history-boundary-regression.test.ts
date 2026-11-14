@@ -20,7 +20,7 @@ async function prepareRepair(tasks: DurableTaskRunStore, root: string, sessionId
   const communication = new TaskCommunication(tasks, sessionId);
   const worker = communication.worker(task.taskRunId, attempt.attemptId);
   for (let index = 0; index < reports; index += 1) worker.report(`progress ${index}`, `report-${index}`);
-  const artifacts: TaskCandidateArtifacts = { ...tasks.get(task.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>, output: "failed candidate", definitionFingerprint: await fingerprintTaskVerificationDefinitions(root, contract, []), repairScope: { enforcement: "post_execution_change_guard", changedPaths: [], violationPaths: [] } };
+  const artifacts: TaskCandidateArtifacts = { ...tasks.get(task.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>, output: "failed candidate", definitionFingerprint: await fingerprintTaskVerificationDefinitions(root, contract, []), repairScope: { version: 2, enforcement: "post_execution_change_guard", changedPaths: [], violationPaths: [] } };
   tasks.transition(task.taskRunId, "verifying", { attemptId: attempt.attemptId, artifacts });
   const evidence = await verifyTaskCandidate({ workspaceRoot: root, ignore: [], taskRunId: task.taskRunId, attemptId: attempt.attemptId, contract, definitionFingerprint: artifacts.definitionFingerprint, repairScope: artifacts.repairScope, executor: { executeTaskCheck: async () => ({ result: { exitCode: 1, stdout: "original diagnostic" }, toolCallId: "original-failure", eventReferences: ["original-failure"] }) } });
   assert.equal(evidence.status, "failed");
