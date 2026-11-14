@@ -602,8 +602,25 @@ export class DurableTaskRunStore {
     ) as unknown as Array<TaskRunRow & { rowid: unknown }>;
     const hasMore = rows.length > limit;
     const visible = hasMore ? rows.slice(0, limit) : rows;
+    // The page already contains complete task rows. Load attempts only for its
+    // visible IDs rather than re-reading every task and preparing N queries.
+    const attempts = new Map<string, TaskAttemptRecord[]>();
+    if (visible.length) {
+      const attemptRows = this.database.prepare(`
+        SELECT attempt_id, task_run_id, run_id, turn_id, parent_run_id, status,
+               high_water_sequence, retry_safety, verification_json, artifacts_json,
+               failure_json, created_at, updated_at
+        FROM task_attempts WHERE task_run_id IN (${visible.map(() => "?").join(",")}) ORDER BY task_run_id ASC, rowid ASC
+      `).iterate(...visible.map((row) => toString(row.task_run_id))) as unknown as Iterable<TaskAttemptRow>;
+      for (const row of attemptRows) {
+        const id = toString(row.task_run_id);
+        const group = attempts.get(id) ?? [];
+        group.push(toTaskAttempt(row));
+        attempts.set(id, group);
+      }
+    }
     return {
-      tasks: visible.map((row) => this.requireWithAttempts(toString(row.task_run_id))),
+      tasks: visible.map((row) => ({ ...toTaskRun(row), attempts: attempts.get(toString(row.task_run_id)) ?? [] })),
       nextCursor: hasMore ? toInteger(visible.at(-1)?.rowid) : undefined,
       hasMore
     };
