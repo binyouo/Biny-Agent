@@ -32,7 +32,7 @@ const loop = method("runTurnLoop");
 function variable(name: string): ts.Node {
   return one(nodes(loop, n => ts.isVariableStatement(n) && n.declarationList.declarations.some(d => d.name.getText(agent) === name)), name);
 }
-const terminalCatch = one(nodes(loop, n => ts.isCatchClause(n) && n.block.statements.some(s => ts.isIfStatement(s) && s.expression.getText(agent) === "retryCommitStarted")), "terminal catch");
+const terminalCatch = one(nodes(loop, n => ts.isCatchClause(n) && n.block.statements.some(s => ts.isIfStatement(s) && s.expression.getText(agent) === "retryCommitOwnsTerminal()")), "terminal catch");
 assert.ok(ts.isCatchClause(terminalCatch));
 const errorCall = one(terminalCatch.block.statements.filter(n => ts.isExpressionStatement(n) && ts.isCallExpression(n.expression) && n.expression.expression.getText(agent) === "this.recordError"), "failure accounting");
 const sessionUsage = one(replay.statements.filter(n => ts.isFunctionDeclaration(n) && n.name?.text === "sessionUsage"), "pure replay usage projection");
@@ -55,8 +55,10 @@ const code = `
       ${variable("usageAuditStarted").getText(agent)}
       const content = "done", finalContextStatus = {}, lastStepReasoningOutput = "";
       const stepReasoningBlocks = undefined, finalAssistantReference = undefined;
-      const pendingRetryReply = undefined, runOptions = {}, retryCursor = undefined;
-      const lastUserMessageReference = undefined, retryCommitStarted = false;
+      const runOptions = {}, retryCursor = undefined;
+      const lastUserMessageReference = undefined;
+      ${variable("retryReply").getText(agent)}
+      ${variable("retryCommitOwnsTerminal").getText(agent)}
       ${variable("usageRecord").getText(agent)}
       ${variable("recordAssistantAudit").getText(agent)}
       if (mode === "success") await recordAssistantAudit();
