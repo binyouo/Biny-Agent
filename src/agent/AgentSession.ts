@@ -2635,6 +2635,7 @@ export class AgentSession {
     let noticeCharacters = 0;
     let noticeCount = 0;
     let receivedNotices: Set<string> | undefined;
+    let undeliveredTaskNotices: AgentUserMessage[] = [];
     const takeTaskNotifications = async (): Promise<AgentUserMessage[]> => {
       const channel = this.options.taskCommunication;
       if (!channel || noticeCount >= 4 || noticeCharacters >= 6000) return [];
@@ -2646,6 +2647,7 @@ export class AgentSession {
           event.type === "user_message" && event.metadata?.source === "subagent" && event.messageId ? [event.messageId] : []));
       }
       const next: AgentUserMessage[] = [];
+      undeliveredTaskNotices = next;
       for (const notice of notices) {
         if (receivedNotices.has(notice.id)) { channel.acknowledge(notice, taskNotificationSessionId); continue; }
         await flushIntermediateRetryReply();
@@ -2655,11 +2657,14 @@ export class AgentSession {
         referenceByMessage.set(message, reference);
         if (runOptions.retryOrigin) retryCursor = reference.id;
         await this.recorder.flush();
+        // Preserve every durably recorded member if a later receipt in this
+        // batch fails before the loop can receive the returned messages.
+        next.push(message);
         channel.acknowledge(notice, taskNotificationSessionId);
         receivedNotices.add(notice.id);
         noticeCount += 1; noticeCharacters += notice.content.length;
-        next.push(message);
       }
+      undeliveredTaskNotices = [];
       return next;
     };
     let systemPrompt = initialSystemPrompt;
@@ -3598,6 +3603,15 @@ export class AgentSession {
       yield doneEvent(outcome);
     } catch (error) {
       if (retryCommitOwnsTerminal()) throw error;
+      const failureContext = undeliveredTaskNotices.length
+        ? [...activeRequestContext.messages, ...undeliveredTaskNotices]
+        : loopContext.messages;
+      if (undeliveredTaskNotices.length) {
+        // Keep only the active context plus this not-yet-returned batch. Replaying
+        // the entire journal here could resurrect compacted or inactive branches.
+        this.contextMemory.replaceHistory(retainEmotionHistory(failureContext));
+        this.contextMessageReferences = failureContext.map(item => referenceByMessage.get(item));
+      }
       yield* pendingEvents.drain();
       const message = errorMessage(error);
       await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
@@ -3618,8 +3632,8 @@ export class AgentSession {
       if (outcome.status === "cancelled") {
         await this.recordCancelledTurn(
           outcome,
-          loopContext.messages,
-          loopContext.messages.map((item) => referenceByMessage.get(item))
+          failureContext,
+          failureContext.map((item) => referenceByMessage.get(item))
         );
       } else {
         await this.recordTurnOutcome(outcome);
