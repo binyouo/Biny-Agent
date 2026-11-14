@@ -144,7 +144,7 @@ function fixture(scenario: Scenario, operation = "agent turn", firstFinish = "le
     previousCheckpointSources: () => ({ text: "", catalog: new Map() }),
     estimateTokens: () => 1,
     buildCompactionDataPrompt: () => "inert transcript",
-    stripTransientTurnContext: (messages: string[]) => messages,
+    retainEmotionHistory: (messages: string[]) => messages,
     boundedCompactionTranscript: () => ({ text: "inert transcript", catalog: new Map([["m0", {}]]) }),
     generateNativeText: async (_model: unknown, _messages: unknown, options: GenerationOptions): Promise<SummaryResult> => {
       counts.summaries += 1;

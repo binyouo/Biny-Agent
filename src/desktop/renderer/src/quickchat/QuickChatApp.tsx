@@ -235,10 +235,12 @@ export function QuickChatApp(): React.JSX.Element {
         sessionIdRef.current = event.sessionId;
         activeRunIdRef.current = event.runId;
         setActiveRunId(event.runId);
-        pendingSendRef.current = undefined;
       }
       if (event.sessionId !== sessionIdRef.current) return;
       if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) return;
+      // A terminal event can arrive before sendPrompt resolves. Invalidate its
+      // receipt so it cannot revive a finished run or overwrite a newer chat.
+      if (isTerminalRunEvent(event)) pendingSendRef.current = undefined;
       handleQuickChatEvent(event, dispatch, setBusy, activeRunIdRef, setActiveRunId);
     });
     return unsubscribe;
@@ -281,7 +283,8 @@ export function QuickChatApp(): React.JSX.Element {
     if (!text || busy || !currentProjectId || !hasModel) return;
     setBusy(true);
     setError(undefined);
-    pendingSendRef.current = { input: text };
+    const pending = { input: text };
+    pendingSendRef.current = pending;
     try {
       const nextThinking = selectedModel?.efforts.length ? thinking : "off";
       if (runtimeModelAliasRef.current !== selectedAlias || runtimeThinkingRef.current !== nextThinking) {
@@ -312,12 +315,14 @@ export function QuickChatApp(): React.JSX.Element {
         undefined,
         contextAttached ? context.promptContext : undefined
       );
+      if (pendingSendRef.current !== pending) return;
       sessionIdRef.current = receipt.sessionId;
       activeRunIdRef.current = receipt.runId;
       setActiveRunId(receipt.runId);
       pendingSendRef.current = undefined;
       dispatch({ type: "ensure-assistant", runId: receipt.runId });
     } catch (sendError) {
+      if (pendingSendRef.current !== pending) return;
       pendingSendRef.current = undefined;
       activeRunIdRef.current = undefined;
       setActiveRunId(undefined);

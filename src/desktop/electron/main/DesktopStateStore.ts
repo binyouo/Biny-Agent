@@ -69,8 +69,16 @@ export class DesktopStateStore {
   constructor(private readonly filePath: string) {}
 
   async load(): Promise<void> {
+    let content: string;
     try {
-      const raw = JSON.parse(await fs.readFile(this.filePath, "utf8")) as Partial<PersistedDesktopState>;
+      content = await fs.readFile(this.filePath, "utf8");
+    } catch (error) {
+      // A failed read is not proof of corruption; preserve the file and current state.
+      if (isNotFound(error)) return;
+      throw error;
+    }
+    try {
+      const raw = JSON.parse(content) as Partial<PersistedDesktopState>;
       this.state = {
         version: 2,
         projects: Array.isArray(raw.projects) ? raw.projects.map((project) => ({
@@ -90,9 +98,7 @@ export class DesktopStateStore {
         preferenceRevision: validPreferenceRevision(raw.preferenceRevision) ? raw.preferenceRevision : 0,
         windowBounds: validWindowBounds(raw.windowBounds) ? raw.windowBounds : undefined
       };
-    } catch (error) {
-      // 文件不存在是首次启动，保留默认状态即可。
-      if (isNotFound(error)) return;
+    } catch {
       // 解析失败则把坏文件留档（便于事后排查），然后从默认状态重新开始。
       const corruptPath = `${this.filePath}.corrupt-${String(Date.now())}`;
       await fs.rename(this.filePath, corruptPath).catch(() => undefined);

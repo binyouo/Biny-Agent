@@ -123,7 +123,8 @@ if (list) {
             cleanup.once("error", reject);
             cleanup.once("exit", code => code === 0 ? resolve() : reject(new Error("Test memory owner cleanup failed.")));
           });
-          await rm(agentDir, { recursive: true, force: true });
+          // Windows 进程退出后的临时文件占用允许有限重试，持续占用仍须使清理失败。
+          await rm(agentDir, { recursive: true, force: true, maxRetries: process.platform === "win32" ? 10 : 0 });
           cleanupFailed = false;
         } finally {
           const cleanupMs = performance.now() - cleanupStarted;
