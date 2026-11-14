@@ -104,4 +104,3 @@ function entry(id: string, userId: string | undefined, threadId: string, tags: s
     revision: 1, durability: "permanent", accessCount: 0
   };
 }
-
