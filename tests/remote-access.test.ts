@@ -96,6 +96,7 @@ test("desktop access publishes only registered pairing, attaches the phone-selec
   assert.equal(access.status().connections, 0);
   agent().send(JSON.stringify({ t: "wmsg", id: "first", s: JSON.stringify(oldHandshake.hello) }));
   await until(() => access.status().connections === 1);
+  await until(() => frames.some(frame => frame.t === "wmsg" && frame.id === "first"));
   const welcome = frames.find(frame => frame.t === "wmsg" && frame.id === "first")!;
   const cipher = await oldHandshake.finish(JSON.parse(welcome.s!));
   assert.equal(counters.subscriptions, 0);
@@ -170,6 +171,7 @@ test("stopping during Host attachment waits for release without exposing a late 
   agent().send(JSON.stringify({ t: "wopen", id: "phone", path: "/__biny_e2e__" }));
   agent().send(JSON.stringify({ t: "wmsg", id: "phone", s: JSON.stringify(handshake.hello) }));
   await until(() => access.status().connections === 1);
+  await until(() => frames.some(frame => frame.t === "wmsg" && frame.id === "phone"));
   const welcome = frames.find(frame => frame.t === "wmsg" && frame.id === "phone")!;
   const cipher = await handshake.finish(JSON.parse(welcome.s!));
   agent().send(JSON.stringify({ t: "wmsg", id: "phone", s: await cipher.encrypt({ id: randomUUID(), method: "create", projectId: "project-one" }) }));
