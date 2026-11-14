@@ -238,13 +238,25 @@ await test("repeated detach and host close share pending local cleanup", { timeo
 for (const recovery of ["detach", "shutdown"] as const) {
   await test(`failed local cleanup retains its resource owner for ${recovery}`, async () => {
     const host = new McpToolHost();
-    const endpoint = localEndpoint();
+    const endpoint = localEndpoint(false, true);
     let closes = 0;
-    await host.attachLocalServer("local", "stable", [], async () => ({
+    await host.attachLocalServer("local", "stable", undefined, async () => ({
       ...(await endpoint.open()), close: async () => { if (++closes === 1) throw new Error("cleanup failed once"); }
     }));
     try {
+      assert.equal(host.createTools().length, 1);
       await assert.rejects(host.detachLocalServer("local"), /cleanup failed once/);
+      const [status] = host.listServers();
+      assert.ok(status, "failed cleanup must remain visible until its resource owner is released");
+      assert.equal(status.enabled, false);
+      assert.equal(status.connected, false);
+      assert.equal(status.connecting, false);
+      assert.match(status.lastError ?? "", /Local MCP cleanup failed: cleanup failed once/);
+      assert.deepEqual(host.createTools(), []);
+      assert.deepEqual(host.listExposedServers(), []);
+      assert.equal(host.hasEnabledServers(), false);
+      await assert.rejects(host.callServerTool("local", "echo", {}), /Unknown MCP server: local/);
+      assert.equal(endpoint.state.calls, 0);
       if (recovery === "detach") await host.detachLocalServer("local");
       else await host.close();
       assert.equal(closes, 2, "failed cleanup must remain available for retry");
@@ -252,6 +264,94 @@ for (const recovery of ["detach", "shutdown"] as const) {
     } finally { await host.close(); }
   });
 }
+
+for (const outcome of ["completes", "fails"] as const) {
+  await test(`a same-name replacement shows its own status when retired cleanup ${outcome}`, { timeout: 5_000 }, async () => {
+    const host = new McpToolHost();
+    const original = localEndpoint();
+    const replacement = localEndpoint(false, true);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let closes = 0;
+    await host.attachLocalServer("local", "old", [], async () => ({
+      ...(await original.open()), close: async () => {
+        if (++closes === 1) throw new Error("old cleanup failed once");
+        await gate;
+        if (closes === 2 && outcome === "fails") throw new Error("old cleanup failed again");
+      }
+    }));
+    let replacing: Promise<void> | undefined;
+    try {
+      await assert.rejects(host.detachLocalServer("local"), /old cleanup failed once/);
+      replacing = host.attachLocalServer("local", "new", undefined, replacement.open);
+      const statuses = host.listServers();
+      assert.equal(statuses.length, 1, "retired and current identities must not create duplicate rows");
+      assert.equal(statuses[0]?.enabled, true);
+      assert.equal(statuses[0]?.connecting, true);
+      assert.equal(statuses[0]?.connected, false);
+      assert.equal(statuses[0]?.lastError, undefined, "the old cleanup error does not belong to the new connection");
+      assert.deepEqual(host.createTools(), []);
+      assert.equal(replacement.state.starts, 0);
+      release();
+      if (outcome === "fails") {
+        await assert.rejects(replacing, /old cleanup failed again/);
+        const statuses = host.listServers();
+        assert.equal(statuses.length, 1);
+        assert.equal(statuses[0]?.connected, false);
+        assert.equal(statuses[0]?.connecting, false);
+        assert.match(statuses[0]?.lastError ?? "", /old cleanup failed again/);
+        assert.equal(replacement.state.starts, 0);
+        assert.deepEqual(host.createTools(), []);
+        return;
+      }
+      await replacing;
+      assert.equal(closes, 2);
+      assert.equal(host.listServers().length, 1);
+      assert.equal(host.listServers()[0]?.connected, true);
+      assert.equal(host.createTools().length, 1);
+      await host.detachLocalServer("local");
+      assert.deepEqual(host.listServers(), [], "completed old cleanup must not reappear after the replacement is detached");
+    } finally { release(); await replacing?.catch(() => undefined); await host.close(); }
+  });
+}
+
+await test("concurrent retired cleanup keeps each failure visible until its own retry completes", { timeout: 5_000 }, async () => {
+  const host = new McpToolHost();
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const retrying = new Promise<void>(resolve => { entered = resolve; });
+  const closes = new Map<string, number>();
+  for (const name of ["first", "second"]) {
+    const endpoint = localEndpoint();
+    await host.attachLocalServer(name, "stable", [], async () => ({
+      ...(await endpoint.open()), close: async () => {
+        const count = (closes.get(name) ?? 0) + 1;
+        closes.set(name, count);
+        if (count === 1) throw new Error(`${name} cleanup failed once`);
+        if (name === "first") { entered(); await gate; }
+      }
+    }));
+  }
+  let first: Promise<void> | undefined;
+  try {
+    await Promise.all(["first", "second"].map(name => assert.rejects(host.detachLocalServer(name), /cleanup failed once/)));
+    assert.deepEqual(host.listServers().map(status => status.name).sort(), ["first", "second"]);
+    first = host.detachLocalServer("first");
+    await retrying;
+    assert.equal(host.detachLocalServer("first"), first, "repeated detach must keep sharing the pending cleanup");
+    await host.detachLocalServer("second");
+    const statuses = host.listServers();
+    assert.equal(statuses.length, 1);
+    assert.equal(statuses[0]?.name, "first");
+    assert.match(statuses[0]?.lastError ?? "", /first cleanup failed once/);
+    assert.equal(statuses[0]?.enabled, false);
+    assert.deepEqual(host.createTools(), []);
+    release();
+    await first;
+    assert.deepEqual(host.listServers(), []);
+    assert.deepEqual([...closes.values()], [2, 2]);
+  } finally { release(); await first; await host.close(); }
+});
 
 await test("detaching a replacement waiting for old cleanup invalidates that replacement", { timeout: 5_000 }, async () => {
   const host = new McpToolHost();
