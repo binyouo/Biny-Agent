@@ -126,7 +126,19 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
       if (event.type === "data") term.write(event.data);
       else setExitCode(event.exitCode);
     };
-    const unsubscribe = window.biny.onTerminalEvent((event) => { if (!terminalId) pending.push(event); else applyEvent(event); });
+    let acceptingEvents = true;
+    const unsubscribe = window.biny.onTerminalEvent((event) => {
+      if (!acceptingEvents) return;
+      if (!terminalId) pending.push(event); else applyEvent(event);
+    });
+    // A failed connection has no handle to drain this buffer. Retire the listener
+    // immediately; an explicit retry creates its own subscription and replay.
+    const stopEvents = (): void => {
+      if (!acceptingEvents) return;
+      acceptingEvents = false;
+      unsubscribe();
+      pending.length = 0;
+    };
     const connect = async (): Promise<DesktopTerminalHandle> => {
       if (slotId !== "preview" || restartToken === 0) {
         return await window.biny.createTerminal(projectId, 80, 24, slotId);
@@ -144,8 +156,8 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
       pending.length = 0;
       fitVisible();
       if (activeRef.current) term.focus();
-    }).catch((reason: unknown) => { if (!disposed) setError(String(reason)); });
-    return () => { disposed = true; observer.disconnect(); themeObserver.disconnect(); themeMedia.removeEventListener("change", applyTheme); unsubscribe(); data.dispose(); resize.dispose(); term.dispose(); terminalRef.current = undefined; fitRef.current = undefined; };
+    }).catch((reason: unknown) => { stopEvents(); if (!disposed) setError(String(reason)); });
+    return () => { disposed = true; observer.disconnect(); themeObserver.disconnect(); themeMedia.removeEventListener("change", applyTheme); stopEvents(); data.dispose(); resize.dispose(); term.dispose(); terminalRef.current = undefined; fitRef.current = undefined; };
   }, [projectId, slotId, restartToken]);
   useEffect(() => {
     if (!active) return;
