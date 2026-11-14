@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 test("流式文本提交间隔至少 24ms，追平后停止调度，新内容可唤醒且卸载释放", async () => {
   const { JSDOM } = await import("jsdom");
-  const dom = new JSDOM("<!doctype html><div id='root'></div>");
+  const dom = new JSDOM("<!doctype html><div id='root'></div>", { pretendToBeVisual: true });
   const React = await import("react");
   const saved = new Map<string, PropertyDescriptor | undefined>();
   let now = 1;
@@ -22,6 +22,17 @@ test("流式文本提交间隔至少 24ms，追平后停止调度，新内容可
   const { useTypewriter } = await import("../src/desktop/renderer/src/components/useTypewriter.js");
   const { MessageTimeline } = await import("../src/desktop/renderer/src/components/MessageTimeline.js");
   const { buildSessionTimeline } = await import("../src/desktop/renderer/src/sessionTimeline.js");
+  const visibilityListeners = new Set<EventListenerOrEventListenerObject>();
+  const addListener = document.addEventListener.bind(document);
+  const removeListener = document.removeEventListener.bind(document);
+  document.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
+    if (type === "visibilitychange") visibilityListeners.add(listener);
+    addListener(type, listener, options);
+  }) as typeof document.addEventListener;
+  document.removeEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => {
+    if (type === "visibilitychange") visibilityListeners.delete(listener);
+    removeListener(type, listener, options);
+  }) as typeof document.removeEventListener;
   const root = createRoot(document.getElementById("root")!);
   const commits: number[] = [];
   function Probe({ text, streaming }: { text: string; streaming: boolean }): React.ReactNode {
@@ -73,6 +84,24 @@ test("流式文本提交间隔至少 24ms，追平后停止调度，新内容可
     assert.equal(document.getElementById("root")!.textContent, "已生成的完整回答", "完成回复不能依赖下一次动画帧");
     assert.equal(frames.size, 0, "完成后取消待执行的展示动画");
 
+    // 隐藏窗口会暂停 rAF，已有缓冲和后台新增量不能留到前台逐字回放。
+    await render("", true);
+    await render("隐藏前已收到", true);
+    assert.equal(document.getElementById("root")!.textContent, "");
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    await React.act(() => document.dispatchEvent(new dom.window.Event("visibilitychange")));
+    assert.equal(document.getElementById("root")!.textContent, "隐藏前已收到", "隐藏时立即展示已收到的正文");
+    assert.equal(frames.size, 0, "隐藏时取消展示动画");
+    await render("隐藏前已收到，后台继续生成", true);
+    assert.equal(document.getElementById("root")!.textContent, "隐藏前已收到，后台继续生成");
+    assert.equal(frames.size, 0, "后台增量不创建动画帧");
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    await React.act(() => document.dispatchEvent(new dom.window.Event("visibilitychange")));
+    await render("隐藏前已收到，后台继续生成，回到前台", true);
+    assert.equal(document.getElementById("root")!.textContent, "隐藏前已收到，后台继续生成", "前台新内容仍使用流式动画");
+    assert.equal(frames.size, 1);
+    await render("隐藏前已收到，后台继续生成，回到前台", false);
+
     // 非流式显示从空内容更新成短正文，同样不等待动画帧。
     await render("", false);
     await render("第二条回答", false);
@@ -92,13 +121,20 @@ test("流式文本提交间隔至少 24ms，追平后停止调度，新内容可
         thinking: !events.some((event) => event.type === "run.completed"),
         onPreviewFile: noop, onOpenExternal: noop, onResolvePermission: noopAsync,
         onRetry: noopAsync, onSwitchVersion: noopAsync, onEditRequest: noop,
-        onCreateBranch: noop, onRollbackFiles: noop
+        onCreateBranch: noop, onRollbackFiles: noop,
+        onReferenceMessage: noop, onShowMessageReferences: noop, onAddQuoteToConversation: noopAsync
       })));
     };
     await renderTimeline();
     events.push({ ...base, type: "assistant.delta", content: "，已经完成。" });
     await renderTimeline();
     assert.equal(document.querySelector(".execution-assistant-step")?.textContent, "嘿");
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    await React.act(() => document.dispatchEvent(new dom.window.Event("visibilitychange")));
+    assert.equal(document.querySelector(".execution-assistant-step")?.textContent, "嘿，已经完成。", "真实消息链路隐藏时展示全部已收到的流式内容");
+    assert.equal(frames.size, 0);
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    await React.act(() => document.dispatchEvent(new dom.window.Event("visibilitychange")));
     events.push({ ...base, type: "assistant.completed", content: "嘿，已经完成。" },
       { ...base, type: "run.completed", durationMs: 1000 });
     await renderTimeline();
@@ -122,8 +158,23 @@ test("流式文本提交间隔至少 24ms，追平后停止调度，新内容可
     assert.equal(document.querySelector(".execution-assistant-step strong")?.textContent, "工具前正文尾部");
     assert.equal(document.querySelector(".execution-assistant-step .with-streaming-cursor"), null);
     assert.equal(frames.size, 0, "工具开始后取消前一段尚未执行的正文帧回调");
+
+    // 隐藏状态首次挂载、短文本替换以及卸载不应遗留任何展示任务。
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    await render("后台初始正文", true);
+    assert.equal(document.getElementById("root")!.textContent, "后台初始正文");
+    await render("替换", true);
+    assert.equal(document.getElementById("root")!.textContent, "替换");
+    await render("替换后的增量", true);
+    assert.equal(document.getElementById("root")!.textContent, "替换后的增量");
+    assert.equal(frames.size, 0);
+    assert.equal(visibilityListeners.size, 1);
+
   } finally {
     await React.act(() => root.unmount());
+    assert.equal(frames.size, 0);
+    assert.equal(visibilityListeners.size, 0, "卸载释放 visibilitychange 监听器");
+    document.dispatchEvent(new dom.window.Event("visibilitychange"));
     assert.equal(frames.size, 0);
     dom.window.close();
     for (const [key, descriptor] of saved) {
