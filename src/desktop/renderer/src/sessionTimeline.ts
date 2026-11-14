@@ -381,8 +381,28 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
   return scopeHistoricalLoadedSkills(events, createHistoricalTimelineFold(events).append(events));
 }
 
+/** Execution evidence attaches to the first call with an ID, unlike tool results. */
+function createHistoricalToolLookup(): (turn: TimelineTurn, id: string) => TimelineTool | undefined {
+  const indexes = new WeakMap<TimelineTurn, { count: number; firstById: Map<string, TimelineTool> }>();
+  return (turn, id) => {
+    let index = indexes.get(turn);
+    if (!index) {
+      index = { count: 0, firstById: new Map() };
+      indexes.set(turn, index);
+    }
+    // Historical folds only append tools. Index lazily so histories without execution
+    // evidence pay no indexing cost, and incremental appends retain their prior work.
+    while (index.count < turn.tools.length) {
+      const tool = turn.tools[index.count++]!;
+      if (!index.firstById.has(tool.id)) index.firstById.set(tool.id, tool);
+    }
+    return index.firstById.get(id);
+  };
+}
+
 function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(events: SessionEvent[]): TimelineTurn[] } {
   const appendAssistant = createHistoricalAssistantAppender();
+  const findExecutionTool = createHistoricalToolLookup();
   const metadataById = historicalUserMetadata(initialEvents, initialEvents);
   const turns: TimelineTurn[] = [];
   let current: TimelineTurn | undefined;
@@ -505,7 +525,7 @@ function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(e
         }
         if (event.type === "agent_message") continue;
         if (event.type === "tool_execution") {
-          const tool = ensureTurn(event.time).tools.find((candidate) => candidate.id === event.toolCallId);
+          const tool = findExecutionTool(ensureTurn(event.time), event.toolCallId);
           if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
           continue;
         }
@@ -548,6 +568,7 @@ interface HistoricalVersionRecord {
 /** 新消息树的历史投影：同一 user turn 下只展示活动版本，工具事件按 runId 回填。 */
 function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
   const appendAssistant = createHistoricalAssistantAppender();
+  const findExecutionTool = createHistoricalToolLookup();
   const activeEvents = activeSessionEventsForPath(events);
   const metadataById = historicalUserMetadata(events, activeEvents);
   const turns: TimelineTurn[] = [];
@@ -713,7 +734,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       continue;
     }
     if (event.type === "tool_execution") {
-      const tool = turnForEvent(event, event.time).tools.find((candidate) => candidate.id === event.toolCallId);
+      const tool = findExecutionTool(turnForEvent(event, event.time), event.toolCallId);
       if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
       continue;
     }
