@@ -2492,6 +2492,10 @@ export class DesktopAgentManager {
   }
 
   private async deleteSessionData(projectId: string, sessionId: string): Promise<void> {
+    // Passive runtime reads skip pending initialization; deletion must not treat
+    // that unknown state as proof that no writer is using the session.
+    const initializing = this.runtimeInitializations.get(projectId);
+    if (initializing) await initializing;
     const managed = await this.getRuntime(projectId, false);
     if (managed) {
       const target = managed.runtime.runtimeSnapshots().find((entry) => entry.sessionId === sessionId);
