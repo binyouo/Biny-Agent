@@ -1251,7 +1251,8 @@ export type TimelineActivityEvent =
   | Pick<Extract<SessionEvent, { type: "user_message" }>, "type" | "content" | "time">
   | Pick<Extract<SessionEvent, { type: "assistant_message" }>, "type" | "content" | "reasoningContent" | "time">
   | Pick<Extract<SessionEvent, { type: "tool_call" }>, "type" | "tool" | "toolCallId" | "args" | "time">
-  | Pick<Extract<SessionEvent, { type: "tool_result" }>, "type" | "tool" | "toolCallId" | "result" | "executionStatus" | "time">;
+  | Pick<Extract<SessionEvent, { type: "tool_result" }>, "type" | "tool" | "toolCallId" | "result" | "executionStatus" | "operationId" | "time">
+  | Extract<SessionEvent, { type: "tool_execution" }>;
 
 export interface SessionTimelineProjector {
   update(input: { sessionId: string; events: SessionEvent[]; liveEvents: AgentHostEvent[] }): TimelineTurn[];
