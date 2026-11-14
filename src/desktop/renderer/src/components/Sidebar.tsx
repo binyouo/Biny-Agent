@@ -839,7 +839,7 @@ function CollapsibleSessionList({ limit, rootPage, canLoadRoots, onLoadRoots, ..
   useEffect(() => {
     if (!shouldCollapse) setExpanded(false);
   }, [shouldCollapse]);
-  const visibleSessions = expanded ? props.sessions : props.sessions.slice(0, limit);
+  const visibleSessions = useMemo(() => expanded ? props.sessions : props.sessions.slice(0, limit), [expanded, props.sessions, limit]);
   return (
     <>
       <SessionList {...props} sessions={visibleSessions} />
@@ -866,7 +866,8 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
   const hover = useFluidHover(listRef, {
     isItemDisabled: (element) => element.closest("[inert]") !== null
   });
-  const rows = useMemo(() => {
+  // Topology depends only on the session snapshot, not selection, hover or layout.
+  const byParent = useMemo(() => {
     const byParent = new Map<string | undefined, DesktopSessionSummary[]>();
     const ids = new Set(sessions.map((session) => session.id));
     for (const session of sessions) {
@@ -875,6 +876,9 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
       siblings.push(session);
       byParent.set(parent, siblings);
     }
+    return byParent;
+  }, [sessions, flat]);
+  const rows = useMemo(() => {
     // 子会话仍通过折叠容器表达从属关系，但标题列保持统一，避免同一列表中
     // 仅因父子关系让可用宽度忽长忽短。
     let rowIndex = 0;
@@ -917,7 +921,7 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
       ];
     };
     return (byParent.get(undefined) ?? []).flatMap((session) => renderNode(session, new Set()));
-  }, [actions, flat, projectId, sessions, selectedSessionId, onSelectSession, onSessionContextMenu, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren, hover.registerItem]);
+  }, [actions, byParent, flat, projectId, selectedSessionId, onSelectSession, onSessionContextMenu, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren, hover.registerItem]);
   return (
     <div ref={listRef} className={`biny-sidebar-session-list${projectId ? " is-indented" : ""}`} {...hover.handlers}>
       <FluidHoverHighlight hover={hover} className="has-row-radius" />
