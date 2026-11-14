@@ -671,8 +671,10 @@ function FilePanelResizer({ width, onWidthChange, onResizeStart, onResizeEnd, re
     if (!active) return;
     event.preventDefault();
     event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
     cancelResize.current?.();
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    target.setPointerCapture(pointerId);
     onResizeStart();
     const layoutRoot = event.currentTarget.closest<HTMLElement>(".biny-app-shell");
     const startX = event.clientX;
@@ -680,6 +682,7 @@ function FilePanelResizer({ width, onWidthChange, onResizeStart, onResizeEnd, re
     let currentWidth = startWidth;
     let resizing = true;
     const move = (moveEvent: PointerEvent): void => {
+      if (!resizing || moveEvent.pointerId !== pointerId) return;
       currentWidth = clampWidth(startWidth + startX - moveEvent.clientX, layoutRoot);
       onWidthChange(currentWidth);
     };
@@ -689,17 +692,19 @@ function FilePanelResizer({ width, onWidthChange, onResizeStart, onResizeEnd, re
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
-      cancelResize.current = undefined;
+      target.removeEventListener("lostpointercapture", stop);
+      if (cancelResize.current === clean) cancelResize.current = undefined;
     };
-    const stop = (): void => {
-      if (!resizing) return;
+    const stop = (endEvent: PointerEvent): void => {
+      if (!resizing || endEvent.pointerId !== pointerId) return;
       clean();
       onResizeEnd(currentWidth);
     };
     cancelResize.current = clean;
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
-    window.addEventListener("pointercancel", stop, { once: true });
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    target.addEventListener("lostpointercapture", stop);
   };
   return (
     <div
