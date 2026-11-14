@@ -12,7 +12,7 @@ const source = ts.createSourceFile("nativeDriver.ts", readFileSync(
 const classes = source.statements.filter(ts.isClassDeclaration);
 const driver = classes.find(node => node.name?.text === "NativeProcessDriver");
 assert.ok(driver);
-const methodNames = ["onData", "onReply", "call", "failHost", "isExpectedIdle", "failAndRetire", "detach", "stop", "stopHost"];
+const methodNames = ["onData", "onReply", "call", "failHost", "isExpectedIdle", "failAndRetire", "detach", "detachHost", "stop", "stopHost"];
 const methods = methodNames.map(name => {
   const matches = driver.members.filter(ts.isMethodDeclaration).filter(node => node.name.getText(source) === name);
   assert.equal(matches.length, 1, name);
