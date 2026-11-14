@@ -133,6 +133,7 @@ export class DesktopBrowserService {
   private desktopWindow: BrowserWindow | undefined;
   private readonly embeddedProjects = new Map<string, EmbeddedProject>();
   private readonly environmentWindows = new Map<string, BrowserWindow>();
+  private readonly environmentSaveTails = new Map<string, Promise<unknown>>();
   private readonly proxyReady = new Map<string, Promise<void>>();
   private readonly deletingBrowserEnvironments = new Set<string>();
   private automationContents: WebContents | undefined;
@@ -168,26 +169,45 @@ export class DesktopBrowserService {
 
   async createBrowserEnvironment(input: BrowserEnvironmentInput) {
     this.assertCookieMutationAllowed();
-    const environment = await this.browserEnvironments.create(input);
-    try { await this.applyBrowserEnvironmentProxy(environment.id); }
-    catch (error) { await this.browserEnvironments.delete(environment.id); throw error; }
-    return environment;
+    // Reserve and register ownership before the store can expose the new ID.
+    const id = randomUUID();
+    return await this.queueBrowserEnvironmentSave(id, async () => {
+      const environment = await this.browserEnvironments.create(input, id);
+      try { await this.applyBrowserEnvironmentProxy(id); }
+      catch (error) { await this.browserEnvironments.delete(id); throw error; }
+      return environment;
+    });
   }
 
   async updateBrowserEnvironment(id: string, input: BrowserEnvironmentInput) {
     this.assertCookieMutationAllowed();
-    const previous = this.browserEnvironments.get(id);
-    if (!previous || id === "default") throw new Error("浏览器环境不存在或不可修改。");
-    const updated = await this.browserEnvironments.update(id, input);
-    this.proxyReady.delete(id);
-    try { await this.applyBrowserEnvironmentProxy(id); }
-    catch (error) {
-      await this.browserEnvironments.update(id, { name: previous.name, proxy: previous.proxy });
+    return await this.queueBrowserEnvironmentSave(id, async () => {
+      const previous = this.browserEnvironments.get(id);
+      if (!previous || id === "default") throw new Error("浏览器环境不存在或不可修改。");
+      const updated = await this.browserEnvironments.update(id, input);
       this.proxyReady.delete(id);
-      await this.applyBrowserEnvironmentProxy(id).catch(() => undefined);
-      throw error;
+      try { await this.applyBrowserEnvironmentProxy(id); }
+      catch (error) {
+        await this.browserEnvironments.update(id, { name: previous.name, proxy: previous.proxy });
+        this.proxyReady.delete(id);
+        await this.applyBrowserEnvironmentProxy(id).catch(() => undefined);
+        throw error;
+      }
+      return updated;
+    });
+  }
+
+  private async queueBrowserEnvironmentSave<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const pending = this.environmentSaveTails.get(id) ?? Promise.resolve();
+    const update = pending.catch(() => undefined).then(async () => {
+      this.assertCookieMutationAllowed();
+      return await operation();
+    });
+    this.environmentSaveTails.set(id, update);
+    try { return await update; }
+    finally {
+      if (this.environmentSaveTails.get(id) === update) this.environmentSaveTails.delete(id);
     }
-    return updated;
   }
 
   async deleteBrowserEnvironment(id: string): Promise<void> {

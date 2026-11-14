@@ -89,12 +89,14 @@ export class BrowserEnvironmentStore {
     return environment && copyEnvironment(environment);
   }
 
-  async create(input: BrowserEnvironmentInput): Promise<BrowserEnvironment> {
+  async create(input: BrowserEnvironmentInput, reservedId: string = randomUUID()): Promise<BrowserEnvironment> {
     return await this.mutate(async () => {
+      const id = z.string().uuid().parse(reservedId);
+      if (this.environments.some(environment => environment.id === id)) throw new Error("浏览器环境 ID 已存在。");
       const normalized = validateEnvironmentInput(input);
       this.assertNameAvailable(normalized.name);
       const environment: BrowserEnvironment = {
-        id: randomUUID(), name: normalized.name,
+        id, name: normalized.name,
         color: environmentColors[this.environments.length % environmentColors.length]!,
         proxy: normalized.proxy
       };
