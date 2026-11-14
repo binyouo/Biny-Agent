@@ -1324,10 +1324,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     if (!projectId || !sessionId || resumeFlightRef.current) return;
+    const request = loadRequestRef.current;
+    const isCurrent = (): boolean => loadRequestRef.current === request
+      && projectRef.current === projectId && selectedRef.current === sessionId;
     resumeFlightRef.current = true;
     try {
       const receipt = await window.biny.resumeInterruptedTurn(projectId, sessionId);
-      if (projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+      if (!isCurrent()) return;
       if (receipt) {
         setGenerationError(undefined);
         setDocument((current) => current?.session.id === sessionId ? { ...current, recovery: undefined } : current);
@@ -1335,7 +1338,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         await openSession(projectId, sessionId, false);
       }
     } catch (error) {
-      if (projectRef.current === projectId && selectedRef.current === sessionId) {
+      if (isCurrent()) {
         await refreshRuntimeFailure(projectId, sessionId).catch(() => undefined);
       }
       throw error;
