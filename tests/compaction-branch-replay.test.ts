@@ -1,3 +1,4 @@
+import { assertRestoredConversation } from "./helpers/restoredConversation.js";
 import { removeTestRoot as rm } from "./helpers/memoryOwnerCleanup.js";
 import { testModel } from "./helpers/model.js";
 import assert from "node:assert/strict";
@@ -43,7 +44,7 @@ for (const retained of [false, true]) {
         assert.equal(selected.contextState?.checkpoint, undefined, "an embedded stale snapshot must not restore the sibling summary");
         assert.equal((await f.agent.contextStatus()).compaction.summaryPresent, false);
         const reopened = await f.reopen(round === 1);
-        assert.deepEqual(reopened.messages, original.messages);
+        assertRestoredConversation(reopened.messages, original.messages);
         assert.equal((await f.agent.contextStatus()).compaction.summaryPresent, false);
         await f.agent.switchMessageVersion(originalAnswer.id, "next");
         const restored = await replaySession(f.file);
@@ -68,7 +69,7 @@ test("full compaction after a retry keeps later messages through cold and snapsh
     assert.equal(replay.contextStartMessageIndex, 2);
     for (const snapshot of [false, true]) {
       const reopened = await f.reopen(snapshot);
-      assert.deepEqual(reopened.messages, replay.messages);
+      assertRestoredConversation(reopened.messages, replay.messages);
       assert.deepEqual(jsonValue(reopened.contextCheckpoint), jsonValue(replay.contextCheckpoint));
     }
   } finally { await f.close(); }
@@ -91,7 +92,7 @@ test("editing a retained boundary preserves the valid shared-ancestor checkpoint
     assert.notEqual(edited.messageReferences[0]?.id, originalUser);
     assert.deepEqual(edited.contextCheckpoint, compacted.contextCheckpoint);
     const reopened = await f.reopen(true);
-    assert.deepEqual(reopened.messages, edited.messages);
+    assertRestoredConversation(reopened.messages, edited.messages);
     assert.deepEqual(jsonValue(reopened.contextCheckpoint), jsonValue(compacted.contextCheckpoint));
   } finally { await f.close(); }
 });
@@ -116,7 +117,7 @@ test("a stale newer checkpoint falls back to the valid ancestor checkpoint", asy
     assert.deepEqual(selected.contextCheckpoint, ancestor.contextCheckpoint);
     assert.equal(selected.contextState?.compactedMessages, ancestor.contextState?.compactedMessages);
     const reopened = await f.reopen(true);
-    assert.deepEqual(reopened.messages, ancestor.messages);
+    assertRestoredConversation(reopened.messages, ancestor.messages);
     assert.deepEqual(jsonValue(reopened.contextCheckpoint), jsonValue(ancestor.contextCheckpoint));
   } finally { await f.close(); }
 });
@@ -180,12 +181,12 @@ test("an old bad replay snapshot is rebuilt from unchanged JSONL without a model
       contextStartUserMessageIndex: 1, contextCheckpoint: compacted.contextCheckpoint, contextState: compacted.contextState };
     f.beforeSummary = async () => { throw new Error("Reopening must not ask a model to reconstruct authoritative history"); };
     const reopened = await f.reopen(true, badReplay);
-    assert.deepEqual(reopened.messages, original.messages);
+    assertRestoredConversation(reopened.messages, original.messages);
     assert.equal(reopened.contextCheckpoint, undefined);
     assert.equal(reopened.contextState?.checkpoint, undefined);
     assert.deepEqual(await readFile(f.file), source, "cache invalidation must not rewrite authoritative conversation data");
     const cached = await f.reopen(true);
-    assert.deepEqual(cached.messages, original.messages);
+    assertRestoredConversation(cached.messages, original.messages);
     assert.equal(cached.events.length, 0, "a fresh-version cache must still be used");
   } finally { await f.close(); }
 });
