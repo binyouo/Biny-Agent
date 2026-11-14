@@ -38,7 +38,7 @@ source += '\n' + decls(coordinatorPath, ['validateStrongConfirmation', 'isToolEx
 source += '\n' + decls('src/tools/exposure.ts', ['getToolExposure', 'isToolModelVisible', 'isToolModelVisibleInMode', 'isToolScriptCallable']);
 source += '\n' + decls('src/tools/access.ts', ['ToolAccesses', 'file', 'conflicts', 'isWriteOperation', 'pathOverlaps', 'isWithin', 'normalizeAccessPath']);
 source += '\n' + decls('src/tools/scheduler.ts', ['defaultMaxToolConcurrency', 'defaultMaxQueuedToolCalls', 'ToolSchedulerQueueFullError', 'ToolScheduler', 'abortReason']);
-source += '\n' + methods('src/tools/registry.ts', 'ToolRegistry', ['register', 'unregister', 'list', 'listEntries']);
+source += '\n' + methods('src/tools/registry.ts', 'ToolRegistry', ['register', 'unregister', 'list', 'listEntries', 'hasRegistration']);
 source += '\n' + decls('src/tools/file/editingMode.ts', ['routeEditingTools']);
 // Extract the real closure for lease wiring separately; never initialize Runtime.
 const runtime = read('src/runtime/CommandRuntime.ts');
@@ -81,7 +81,7 @@ assert.deepEqual((compiled.diagnostics??[]).filter(d=>d.category===ts.Diagnostic
 const {ToolExecutionCoordinator,ToolRegistry,ToolScheduler,ToolAccesses,wiring} = runInNewContext(compiled.outputText, bindings, {timeout:2000,contextCodeGeneration:{strings:false,wasm:false}});
 const deferred = () => { let resolve!: (value?: any) => void; const promise = new Promise<any>(r=>resolve=r); return {promise,resolve}; };
 function fixture() {
-  const registry=Object.create(ToolRegistry.prototype); registry.tools=new Map();
+  const registry=Object.create(ToolRegistry.prototype); registry.tools=new Map(); registry.registrations=new WeakSet();
   const c=Object.create(ToolExecutionCoordinator.prototype), audit: any[]=[], calls: string[]=[];
   const config={agent:{toolExecutionMode:'direct'},workspace:{ignore:[]}};
   Object.assign(c,{context:{toolRegistry:registry,config,workspaceRoot:'/inert',recorder:{sessionId:'inert'}},
