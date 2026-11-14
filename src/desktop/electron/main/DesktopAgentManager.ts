@@ -577,6 +577,11 @@ export class DesktopAgentManager {
   private wireRuntimeEvents(projectId: string, runtime: RuntimeHostClient): () => void {
     return runtime.subscribeAllRuntimeEvents((update) => {
       const event = update.event;
+      // Replay-gap recovery may replace a missed terminal event with an idle snapshot.
+      // Its persisted history is authoritative; stale live deltas would hide that answer.
+      if (!event && update.snapshot.state.kind === "idle") {
+        this.projectEvents(projectId).delete(update.snapshot.info.sessionId);
+      }
       if (event) {
         const projectEvents = this.projectEvents(projectId);
         if (isTerminalRunEvent(event)) {
