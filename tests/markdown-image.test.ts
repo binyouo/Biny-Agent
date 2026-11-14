@@ -1,7 +1,7 @@
 /** 图片公开 DOM 契约；视觉及真实剪贴板权限由人工验收。 */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import React from "react";
+import React, { act } from "react";
 import { JSDOM } from "jsdom";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -140,5 +140,76 @@ test("链接里的可预览图片点击与 Enter 只打开原图，不同时打�
     flushSync(() => image.dispatchEvent(new mounted.dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
     assert.equal(opened, 0);
     assert.ok(document.querySelector('[role="dialog"]'));
+  } finally { mounted.close(); }
+});
+
+test("原图拖动只响应拥有捕获的指针，丢失捕获后停止并可重新拖动", async () => {
+  const mounted = mountImage("https://example.com/pointer-ownership.png");
+  try {
+    const image = loadImage(mounted.dom, 400, 400);
+    flushSync(() => image.click());
+    let viewport = document.querySelector<HTMLElement>(".markdown-image-lightbox-viewport")!;
+    let preview = viewport.querySelector("img")!;
+    const captures = new Set<number>();
+    viewport.setPointerCapture = id => { captures.add(id); };
+    viewport.hasPointerCapture = id => captures.has(id);
+    viewport.releasePointerCapture = id => {
+      captures.delete(id);
+      const lost = new mounted.dom.window.Event("lostpointercapture", { bubbles: true });
+      Object.defineProperty(lost, "pointerId", { value: id });
+      viewport.dispatchEvent(lost);
+    };
+    const pointer = async (type: string, pointerId: number, clientX: number) => {
+      const event = new mounted.dom.window.MouseEvent(type, { bubbles: true, button: 0, clientX, clientY: 0 });
+      Object.defineProperty(event, "pointerId", { value: pointerId });
+      const previous = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+      try { await act(async () => { viewport.dispatchEvent(event); }); }
+      finally { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previous; }
+    };
+    await pointer("pointerdown", 1, 10);
+    assert.equal(captures.has(1), true, "drag started");
+    await pointer("pointermove", 1, 30);
+    assert.match(preview.style.transform, /translate\(20px, 0px\)/);
+    await pointer("pointerdown", 2, 100);
+    await pointer("pointermove", 2, 150);
+    await pointer("pointerup", 2, 150);
+    assert.match(preview.style.transform, /translate\(20px, 0px\)/, "第二个指针不能移动或终止当前拖动");
+    await pointer("pointermove", 1, 40);
+    assert.match(preview.style.transform, /translate\(30px, 0px\)/);
+    captures.delete(1);
+    await pointer("lostpointercapture", 1, 40);
+    assert.equal(viewport.classList.contains("is-dragging"), false);
+    await pointer("pointermove", 1, 80);
+    assert.match(preview.style.transform, /translate\(30px, 0px\)/, "丢失捕获后的移动不能继续拖图");
+    await pointer("pointerdown", 3, 100);
+    await pointer("lostpointercapture", 1, 100);
+    await pointer("pointermove", 3, 110);
+    assert.match(preview.style.transform, /translate\(40px, 0px\)/, "旧指针丢捕获事件不能取消新的拖动");
+    await pointer("pointercancel", 3, 110);
+    assert.equal(viewport.classList.contains("is-dragging"), false);
+    assert.equal(captures.size, 0);
+    await pointer("pointermove", 3, 200);
+    assert.match(preview.style.transform, /translate\(40px, 0px\)/);
+    await pointer("pointerdown", 4, 100);
+    await pointer("pointermove", 4, 110);
+    await pointer("pointerup", 4, 110);
+    assert.equal(captures.size, 0);
+    assert.equal(viewport.classList.contains("is-dragging"), false);
+    await pointer("pointermove", 4, 200);
+    assert.match(preview.style.transform, /translate\(50px, 0px\)/);
+    await pointer("pointerdown", 5, 0);
+    flushSync(() => document.dispatchEvent(new mounted.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    flushSync(() => image.click());
+    viewport = document.querySelector<HTMLElement>(".markdown-image-lightbox-viewport")!;
+    preview = viewport.querySelector("img")!;
+    assert.equal(viewport.classList.contains("is-dragging"), false);
+    await pointer("pointermove", 5, 100);
+    assert.match(preview.style.transform, /translate\(0px, 0px\)/);
+    await pointer("pointerdown", 6, 10);
+    await pointer("pointermove", 6, 20);
+    assert.match(preview.style.transform, /translate\(10px, 0px\)/);
+    await pointer("pointerup", 6, 20);
   } finally { mounted.close(); }
 });
