@@ -233,13 +233,13 @@ export class ToolExecutionCoordinator {
         const origins = registered.name === "apply_patch" && !originalRegistrations.has(registered.name)
           ? [originalRegistrations.get("Write")!, originalRegistrations.get("Edit")!]
           : [originalRegistrations.get(registered.name)!];
-        const isCurrent = () => origins.every((entry) => this.context.toolRegistry.listEntries().includes(entry)
+        const isCurrent = () => origins.every((entry) => this.context.toolRegistry.hasRegistration(entry)
           && (options?.discovery ? isToolModelVisibleInMode(entry.tool, this.context.config.agent.toolExecutionMode) : isCodeModeTool(entry))
           && (!this.executionToolNames || this.executionToolNames.has(entry.tool.name))
           && (options?.discovery || isToolScriptCallable(entry.tool, !this.executionToolNames || !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name))));
         // A direct model step may finish after its browser/extension registration
         // was revoked. Keep its schema snapshot, but recheck the original authority.
-        const isCurrentDirect = () => origins.every((entry) => this.context.toolRegistry.listEntries().includes(entry)
+        const isCurrentDirect = () => origins.every((entry) => this.context.toolRegistry.hasRegistration(entry)
           && isToolModelVisibleInMode(entry.tool, this.context.config.agent.toolExecutionMode)
           && (options?.discovery ? !this.executionToolNames || this.executionToolNames.has(entry.tool.name)
             : !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name)));
