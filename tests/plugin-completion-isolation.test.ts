@@ -25,6 +25,16 @@ function declaration(name: string): string {
   assert.equal(matches.length, 1, `unique actual helper ${name}`);
   return matches[0]!.getText(ast);
 }
+function variable(name: string): string {
+  const matches: ts.VariableStatement[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableStatement(node) && node.declarationList.declarations.some(item => item.name.getText(ast) === name)) matches.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  assert.equal(matches.length, 1, `unique actual variable ${name}`);
+  return matches[0]!.getText(ast);
+}
 function uniqueSlice(text: string, start: string, end: string): string {
   assert.equal(text.split(start).length, 2, `unique start ${start}`);
   assert.equal(text.split(end).length, 2, `unique end ${end}`);
@@ -34,9 +44,9 @@ function uniqueSlice(text: string, start: string, end: string): string {
   return text.slice(begin, finish);
 }
 const tail = uniqueSlice(source,
-  '      if (!retryCommitStarted) recordAssistantAudit();',
+  '      if (!retryCommitOwnsTerminal()) recordAssistantAudit();',
   '\n  }\n\n  async runTask(');
-assert.ok(tail.includes('} catch (error) {\n      if (retryCommitStarted) throw error;'));
+assert.ok(tail.includes('} catch (error) {\n      if (retryCommitOwnsTerminal()) throw error;'));
 assert.ok(tail.includes('yield { type: "assistant.completed", content, notification };'));
 assert.ok(tail.includes('await this.recordTurnOutcome(outcome);'));
 assert.equal((tail.match(/yield doneEvent\(outcome\)/gu) ?? []).length, 2);
@@ -49,7 +59,7 @@ const registryExports = {};
 vm.runInNewContext(registryJs, { exports: registryExports, structuredClone });
 const { PluginLifecycleRegistry } = registryExports as { PluginLifecycleRegistry: typeof Registry };
 const bindingNames = [
-  "retryCommitStarted", "recordAssistantAudit", "outcome", "runPluginLifecycle",
+  "recordAssistantAudit", "outcome", "runPluginLifecycle",
   "pluginToolSelectionAllowsCalls", "pluginLifecycle", "readSessionEvents", "replaySessionEvents",
   "messageText", "input", "turnPersonalization", "callPluginMcpTool", "content", "notification",
   "runOptions", "systemPrompt", "finalMessages", "coordinator",
@@ -62,6 +72,8 @@ const program = `
 ${["doneEvent", "nativeTurnOutcome", "failedTurn", "cancelledTurn"].map(declaration).join("\n")}
 async function* completionFixture(bindings) {
  const { ${bindingNames.join(", ")} } = bindings;
+ ${variable("retryReply")}
+ ${variable("retryCommitOwnsTerminal")}
  ${waitHelper}
  try {
  ${tail}
@@ -148,7 +160,7 @@ async function run(options: FaultOptions = {}) {
     recordError: (error: unknown) => calls.push(`error:${error}`)
   };
   const bindings = {
-    retryCommitStarted: false, outcome: context.complete(),
+    outcome: context.complete(),
     recordAssistantAudit: () => calls.push("audit"),
     runPluginLifecycle: true, pluginToolSelectionAllowsCalls: true, pluginLifecycle: lifecycle,
     readSessionEvents: readEvents,

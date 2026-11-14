@@ -492,6 +492,30 @@ async function assertPreview(source: PreviewSource, owner: NavigationContents, p
 }
 
 async function previewAttributionTests(t: TestContext, Service: BrowserServiceClass): Promise<void> {
+  await t.test("session actions follow cross-environment navigation without reclaiming retained tabs", () => withPreviewBrowser(Service, async f => {
+    const context = { projectId: "project-a", sessionId: "moving-session" };
+    await f.request("navigate", { ...context, environment: "default", url: "https://example.invalid/personal" });
+    const personal = NavigationView.instances.at(-1)!.webContents;
+    await f.request("navigate", { ...context, sessionId: "other-session", environment: "default", url: "https://example.invalid/other" });
+    const other = NavigationView.instances.at(-1)!.webContents;
+    for (const [environment, suffix] of [[f.work, "work"], ["default", "returned"], [f.work, "work-again"]]) {
+      const url = `https://example.invalid/${suffix}`;
+      await f.request("navigate", { ...context, environment, url });
+      const current = NavigationView.instances.at(-1)!.webContents;
+      assert.deepEqual(await f.request("read_dom", context), { url, title: current.title });
+      await f.request("fill", { ...context, selector: "#field", value: "draft" });
+      assert.ok(current.inputEvents.includes("Input.insertText"), "input targets the newly navigated account, not the first session tab");
+      assert.equal(personal.inputEvents.length, 0);
+      assert.deepEqual(await f.request("read_dom", { ...context, sessionId: "other-session" }), { url: other.url, title: other.title });
+    }
+    await f.request("close", context);
+    await assert.rejects(f.request("read_dom", context), /no longer owned/u);
+    assert.equal(personal.isDestroyed(), false);
+    assert.equal(personal.url, "https://example.invalid/personal");
+    assert.equal(other.isDestroyed(), false);
+    assert.equal(f.a.contents.isDestroyed(), false);
+    assert.equal(f.browser.browserSnapshot("project-a").tabs.length, 5, "only the current owner closes; prior account pages and other sessions survive");
+  }));
   await t.test("BrowserOpen reads a parsed document before dom-ready and keeps observation ownership", () => withPreviewBrowser(Service, async f => {
     const dom = new JSDOM('<title>Docs</title><body></body>', { url: navigationUrl, runScripts: "outside-only" });
     const { window } = dom;

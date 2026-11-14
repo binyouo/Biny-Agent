@@ -19,7 +19,8 @@ const extract = (file: ts.SourceFile, names: string[]) => names.map(name => {
   assert.equal(found.length, 1, `exactly one approved pure function: ${name}`);
   return found[0]!.getText(file).replace(/^export /u, "");
 }).join("\n");
-const treeFunctions = extract(tree, ["sessionMessageTree", "activeSessionMessageIds", "compatibleSessionSelections", "activeSessionEventsForPath"]);
+const treeFunctions = extract(tree, ["sessionMessageMetadataForIds", "mergeMessageMetadata", "sessionMessageTree",
+  "activeSessionMessageIds", "compatibleSessionSelections", "activeSessionEventsForPath"]);
 const replayFunctions = extract(replaySource, ["uncoveredCanonicalToolCalls", "projectSessionConversation", "completeCanonicalStepResults",
   "replayReasoningParts", "normalizeToolArguments", "stringifyResult", "applyContextCheckpoint"]);
 const script = `${treeFunctions}\n${replayFunctions}\nclass Hydrator { ${hydrateMethod.getText(source).replace(/^private /u, "")} }
