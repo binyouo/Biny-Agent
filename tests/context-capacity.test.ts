@@ -50,7 +50,7 @@ function historicalHeartbeat(): DesktopSessionDocument {
     },
     events: [{
       type: "assistant_message", content: "Done",
-      usage: { operation: "agent", modelAlias: "free/workbuddy-ai/deepseek-v4.1-flash", provider: "openai-compatible", model: "workbuddy-ai/deepseek-v4.1-flash" },
+      usage: { pricingKnown: false, operation: "agent", modelAlias: "free/workbuddy-ai/deepseek-v4.1-flash", provider: "openai-compatible", model: "workbuddy-ai/deepseek-v4.1-flash" },
       contextState: {
         compactedMessages: 0, promptProvider: "openai-compatible", promptModel: "workbuddy-ai/deepseek-v4.1-flash",
         budget: {
@@ -195,7 +195,7 @@ test("最新模型缺少 input usage 时，不使用更早另一模型的输入�
   previous.contextState = undefined;
   previous.usage.inputTokens = 34_931;
   document.events.push({ type: "assistant_message", content: "New model reply", usage: {
-    operation: "agent", modelAlias: "new-model", provider: "openai-compatible", model: "different-model"
+    pricingKnown: false, operation: "agent", modelAlias: "new-model", provider: "openai-compatible", model: "different-model"
   } });
   const newModel = { ...currentModel, alias: "new-model", model: "different-model", contextWindow: 64_000 };
   assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel, newModel],
@@ -244,4 +244,68 @@ test("未知容量不生成窗口占比，输入分类以实际输入总量为�
   assert.equal(display?.compactUsed, "48.5K");
   assert.deepEqual(display?.categories.map(category => category.percent), ["75.0", "0.0", "25.0", "0.0", "0.0", "0.0"]);
   assert.deepEqual(display?.categories.map(category => category.width), [75, 0, 25, 0, 0, 0]);
+});
+
+test("context usage reads only the tail containing the latest persisted budget", () => {
+  const document = historicalHeartbeat();
+  const latest = document.events[0]!;
+  const history: DesktopSessionDocument["events"] = Array.from({ length: 10_000 }, () => ({ type: "user_message", content: "old" }));
+  history.push(latest);
+  let reads = 0;
+  document.events = new Proxy(history, {
+    get(target, property, receiver) {
+      if (typeof property === "string" && /^\d+$/u.test(property)) reads++;
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] })?.usedTokens, 34_931);
+  assert.ok(reads <= 2, `latest budget required ${reads} event-index reads`);
+  history.push({ type: "context_checkpoint", reason: "manual", summary: "Summary", firstKeptMessageIndex: 2,
+    tokensBefore: 34_931, tokensAfter: 100, compactedMessages: 2, createdAt: "2026-11-02T00:00:00Z" });
+  reads = 0;
+  assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] })?.usedTokens, 100);
+  assert.ok(reads <= 3, `new checkpoint required ${reads} event-index reads`);
+  // The same mutable events array must observe a subsequently appended budget.
+  history.push(latest);
+  reads = 0;
+  assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] })?.usedTokens, 34_931);
+  assert.ok(reads <= 2, `appended budget required ${reads} event-index reads`);
+});
+
+test("tail scan ignores audit budgets and prefers persisted state over a newer unbudgeted reply", () => {
+  const document = historicalHeartbeat();
+  const prior = document.events[0]!;
+  document.events.push({ type: "assistant_message", content: "later", usage: { operation: "agent", modelAlias: currentModel.alias, provider: currentModel.providerType, model: currentModel.model, pricingKnown: false, inputTokens: 999 } });
+  assert.ok(prior.type === "assistant_message" && prior.contextState);
+  document.events.push({ ...prior, auditOnly: true, contextState: { ...prior.contextState, budget: { ...prior.contextState.budget, usedTokens: 888 } } });
+  assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] })?.usedTokens, 34_931);
+});
+
+test("tail scan preserves newest checkpoint without searching past a newer user budget", () => {
+  const document = historicalHeartbeat();
+  const checkpoint = { type: "context_checkpoint" as const, reason: "manual" as const, summary: "Summary", firstKeptMessageIndex: 2,
+    tokensBefore: 34_931, tokensAfter: 100, compactedMessages: 2, createdAt: "2026-11-02T00:00:00Z" };
+  document.events.push(checkpoint, { ...checkpoint, tokensAfter: 200 });
+  assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] })?.usedTokens, 200);
+  document.events.push({ type: "user_message", content: "new", contextState: { compactedMessages: 2,
+    budget: { maxTokens: 900_000, usedTokens: 300, modelAlias: currentModel.alias, contextWindow: 1_048_576, source: "provider", omitted: [], autoCompacted: false }
+  } });
+  assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] })?.usedTokens, 300);
+});
+
+test("usage fallback with no persisted budget scans each event at most once", () => {
+  const document = historicalHeartbeat();
+  const reply = document.events[0]!;
+  assert.ok(reply.type === "assistant_message" && reply.usage);
+  reply.contextState = undefined;
+  reply.usage = { ...reply.usage, inputTokens: 1234 };
+  const history: DesktopSessionDocument["events"] = [reply, ...Array.from({ length: 1000 }, (): DesktopSessionDocument["events"][number] => ({ type: "user_message", content: "unbudgeted" }))];
+  let reads = 0;
+  document.events = new Proxy(history, { get(target, property, receiver) {
+    if (typeof property === "string" && /^\d+$/u.test(property)) reads++;
+    return Reflect.get(target, property, receiver);
+  } });
+  assert.equal(resolveSessionContextUsage({ sessionId: "heartbeat", document, models: [currentModel] })?.usedTokens, 1234);
+  assert.equal(reads, history.length);
+  assert.equal(history[0], reply);
 });
