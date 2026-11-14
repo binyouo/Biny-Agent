@@ -469,29 +469,22 @@ function storedCredentialValues(config: AgentConfig, previous: AgentConfig): Map
     values.set(providerCredentialAccount(alias, "apiKey"), provider?.apiKey);
     values.set(providerCredentialAccount(alias, "refreshToken"), provider?.oauth?.refreshToken);
   }
-  for (const { account, value } of mcpCredentialValues(config, previous)) values.set(account, value);
+  for (const { account, value } of mcpCredentialValues(config)) values.set(account, value);
   for (const account of mcpCredentialAccounts(previous)) {
     if (!values.has(account)) values.set(account, undefined);
   }
   return values;
 }
 
-function mcpCredentialValues(config: AgentConfig, previous: AgentConfig): Array<{ account: string; value: string | undefined }> {
+function mcpCredentialValues(config: AgentConfig): Array<{ account: string; value: string | undefined }> {
   const values: Array<{ account: string; value: string | undefined }> = [];
-  const names = new Set([...Object.keys(previous.extensions.mcp), ...Object.keys(config.extensions.mcp)]);
-  for (const name of names) {
-    const current = config.extensions.mcp[name];
-    const old = previous.extensions.mcp[name];
+  // Collect live references first. Removed aliases must not overwrite a live
+  // reference to the same account with undefined; the caller removes accounts
+  // only after checking that no current provider or MCP reference remains.
+  for (const current of Object.values(config.extensions.mcp)) {
     for (const location of ["env", "headers"] as const) {
-      const keys = new Set([
-        ...Object.keys(old?.credentialRefs?.[location] ?? {}),
-        ...Object.keys(current?.credentialRefs?.[location] ?? {})
-      ]);
-      for (const key of keys) {
-        const account = current?.credentialRefs?.[location]?.[key] ?? old?.credentialRefs?.[location]?.[key];
-        if (!account) continue;
-        const active = current?.credentialRefs?.[location]?.[key] === account;
-        values.push({ account, value: active ? current?.[location]?.[key] : undefined });
+      for (const [key, account] of Object.entries(current.credentialRefs?.[location] ?? {})) {
+        values.push({ account, value: current[location]?.[key] });
       }
     }
   }

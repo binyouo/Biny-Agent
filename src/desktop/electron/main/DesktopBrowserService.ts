@@ -1072,7 +1072,12 @@ export class DesktopBrowserService {
           tab = this.embeddedProjects.get(projectId)?.tabs.get(snapshot.activeId ?? "");
         }
         if (!tab || tab.view.webContents.isDestroyed()) throw new Error("浏览器标签不可用。");
-        if (sessionId) tab.agentSessionId = sessionId;
+        if (sessionId) {
+          for (const previous of this.embeddedProjects.get(projectId)!.tabs.values()) {
+            if (previous.agentSessionId === sessionId) previous.agentSessionId = undefined;
+          }
+          tab.agentSessionId = sessionId;
+        }
         contents = tab.view.webContents;
         this.automationContents = contents;
         if (observe) await loadUntilDomReady(contents, url, signal, () => this.evaluate("document.readyState", signal, contents));

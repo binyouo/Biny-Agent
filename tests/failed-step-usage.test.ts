@@ -64,10 +64,10 @@ const flags = variable("usageAuditStarted");
 assert.ok(flags.length === 0 || flags.length === 1, "baseline or candidate local guard");
 const catchNode = exactlyOne(descendants(loop, node => ts.isCatchClause(node)
   && node.block.statements.some(statement => ts.isIfStatement(statement)
-    && statement.expression.getText(agent) === "retryCommitStarted")), "terminal catch");
+    && statement.expression.getText(agent) === "retryCommitOwnsTerminal()")), "terminal catch");
 assert.ok(ts.isCatchClause(catchNode));
 const retryGuard = catchNode.block.statements[0]!;
-assert.ok(ts.isIfStatement(retryGuard) && retryGuard.expression.getText(agent) === "retryCommitStarted"
+assert.ok(ts.isIfStatement(retryGuard) && retryGuard.expression.getText(agent) === "retryCommitOwnsTerminal()"
   && ts.isThrowStatement(retryGuard.thenStatement), "retry commit retains first-priority throw");
 const errorCall = exactlyOne(catchNode.block.statements.filter(statement => ts.isExpressionStatement(statement)
   && ts.isCallExpression(statement.expression) && statement.expression.expression.getText(agent) === "this.recordError"), "actual catch accounting");
@@ -75,14 +75,17 @@ const code = [
   `class AccountingFixture {
     ${method("recordError").getText(agent)}
     ${method("takeRelatedUsage").getText(agent)}
-    async settle(mode, stepUsageRecords, retryCommitStarted = false) {
+    async settle(mode, stepUsageRecords, retryPhase = "empty") {
       ${flags.map(node => node.getText(agent)).join("\n")}
       const content = "done";
       const finalContextStatus = {};
       const lastStepReasoningOutput = "";
       const stepReasoningBlocks = undefined;
       const finalAssistantReference = undefined;
-      const pendingRetryReply = undefined;
+      ${exactlyOne(variable("retryReply"), "actual retry state").getText(agent)}
+      ${exactlyOne(variable("retryCommitOwnsTerminal"), "actual retry ownership").getText(agent)}
+      if (retryPhase === "committed") retryReply.state = { phase: "committed" };
+      else if (retryPhase !== "empty") retryReply.state = { phase: retryPhase, message: { role: "assistant", content: [] } };
       const runOptions = {};
       const retryCursor = undefined;
       const lastUserMessageReference = undefined;
@@ -134,7 +137,7 @@ interface Extracted {
   sumSessionUsage(records: Usage[]): Usage;
   summarizeUsage(records: Usage[]): Summary;
   sessionUsage(events: Event[]): Usage[];
-  fixture: { settle(mode: "success" | "provider-failure" | "terminal-failure", records: Usage[], retryCommitStarted?: boolean): Promise<void> };
+  fixture: { settle(mode: "success" | "provider-failure" | "terminal-failure", records: Usage[], retryPhase?: "empty" | "buffered" | "committing" | "committed"): Promise<void> };
 }
 // The timeout bounds VM setup only; later extracted function calls are not timed by it.
 const accountingFixture = runInNewContext(stripTypeScriptTypes(code, { mode: "strip" }), {
@@ -316,9 +319,14 @@ test("an attempted audit or owned retry commit never gets a second catch settlem
       "uncertain persistence is not repaired by another write");
     assert.ok(f.events.filter(event => event.type === "error").every(event => event.relatedUsage === undefined));
   }
-  const retry = fixture();
-  await assert.rejects(retry.state.settle("provider-failure", [first()], true), /inert later failure/u);
-  assert.equal(retry.events.length, 0, "existing retry commit recovery remains the sole owner");
+  for (const phase of ["committing", "committed"] as const) {
+    const retry = fixture();
+    await assert.rejects(retry.state.settle("provider-failure", [first()], phase), /inert later failure/u);
+    assert.equal(retry.events.length, 0, `${phase}: retry commit recovery remains the sole owner`);
+  }
+  const buffered = fixture();
+  await buffered.state.settle("provider-failure", [first()], "buffered");
+  assert.equal(buffered.restored().length, 1, "buffering a reply has not acquired terminal ownership");
 });
 
 test("canonical/request evidence is not counted twice and active branch filtering stays unchanged", async () => {
