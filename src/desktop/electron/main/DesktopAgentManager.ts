@@ -255,6 +255,7 @@ export class DesktopAgentManager {
   private idleRuntimeRebuildTail: Promise<void> = Promise.resolve();
   private readonly pendingSessionReads = new Map<string, {
     initialRevision: string | undefined;
+    unreadGeneration: number;
     promise: Promise<SessionCatalogRecord>;
   }>();
   /** 置顶等操作可提前消费 revision 映射，退出仍需独立排空派生索引发布。 */
@@ -263,6 +264,11 @@ export class DesktopAgentManager {
   private readonly stagedSettingsCredentials = new Map<string, StagedSettingsCredential>();
   private readonly modelLogin: DesktopModelLoginService;
   private readonly identityStorage = new IdentityStorage();
+  /** Local read admission retires recovery even when the persisted false patch is a no-op. */
+  private readonly sessionReadEpochs = new Map<string, number>();
+  private readonly sessionUnreadGenerations = new Map<string, number>();
+  private readonly sessionMetadataTails = new Map<string, Promise<unknown>>();
+  private readonly sessionUnreadRecoveries = new Set<Promise<void>>();
   private closing = false;
 
   constructor(
@@ -575,8 +581,49 @@ export class DesktopAgentManager {
 
   /** 事件订阅统一出口：所有 runtime 的事件按 sessionId 分桶后广播，meta 标记来源实例。 */
   private wireRuntimeEvents(projectId: string, runtime: RuntimeHostClient): () => void {
-    return runtime.subscribeAllRuntimeEvents((update) => {
+    const lifetime = this.runtimeLifetime(projectId);
+    let subscribed = true;
+    // No offline inference: only a concrete run seen by this subscription can be recovered.
+    const observed = new Map<string, { runId: string; readEpoch: number; pending: boolean }>();
+    const unsubscribe = runtime.subscribeAllRuntimeEvents((update) => {
       const event = update.event;
+      const id = update.snapshot.info.sessionId;
+      const key = sessionReadKey(projectId, id);
+      const running = activeRun(update.snapshot);
+      if (running && observed.get(id)?.runId !== running.runId) {
+        observed.set(id, { runId: running.runId, readEpoch: this.sessionReadEpochs.get(key) ?? 0, pending: false });
+      }
+      if (event && isTerminalRunEvent(event)) observed.delete(event.sessionId);
+      if (!event && update.snapshot.state.kind === "idle") {
+        const candidate = observed.get(id);
+        if (candidate && !candidate.pending) {
+          const current = (admitted = false): boolean => subscribed && (admitted || !this.closing)
+            && this.runtimeLifetimes.get(projectId) === lifetime && observed.get(id) === candidate
+            && (this.sessionReadEpochs.get(key) ?? 0) === candidate.readEpoch;
+          const background = (): boolean => this.state.activeProjectId() !== projectId || this.state.selectedSessionId(projectId) !== id;
+          if (!current() || !background()) observed.delete(id);
+          else {
+            candidate.pending = true;
+            const recovery = (async () => {
+              const project = this.projects.requireProject(projectId);
+              const document = await this.projects.openSession(project, id, undefined, new Map());
+              if (!current()) return;
+              const terminals = document.events.filter(item => item.type === "turn_status" && item.runtime?.runId === candidate.runId);
+              if (terminals.length !== 1) return;
+              this.sessionUnreadGenerations.set(key, (this.sessionUnreadGenerations.get(key) ?? 0) + 1);
+              await this.queueSessionMetadata(key, async () => {
+                if (!current(true) || !background()) return;
+                await this.projects.updateSessionMetadata(project, id, { unread: true });
+              });
+              if (observed.get(id) === candidate) observed.delete(id);
+            })().catch(() => undefined).finally(() => {
+              candidate.pending = false;
+              this.sessionUnreadRecoveries.delete(recovery);
+            });
+            this.sessionUnreadRecoveries.add(recovery);
+          }
+        }
+      }
       if (event) {
         const projectEvents = this.projectEvents(projectId);
         if (isTerminalRunEvent(event)) {
@@ -593,8 +640,17 @@ export class DesktopAgentManager {
           if (sessionEvents.length > 4_000) sessionEvents.splice(0, sessionEvents.length - 4_000);
           projectEvents.set(event.sessionId, sessionEvents);
         }
+        if (!this.closing && isTerminalRunEvent(event) && (this.state.activeProjectId() !== projectId || this.state.selectedSessionId(projectId) !== event.sessionId)) {
+          const terminalKey = sessionReadKey(projectId, event.sessionId);
+          this.sessionUnreadGenerations.set(terminalKey, (this.sessionUnreadGenerations.get(terminalKey) ?? 0) + 1);
+          void this.queueSessionMetadata(terminalKey, async () => {
+            if (this.runtimeLifetimes.get(projectId) === lifetime) {
+              await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), event.sessionId, { unread: true });
+            }
+          }).catch(() => undefined);
+        }
+        // Preserve Desktop's release-request policy; the Host owns actual idle claim cleanup.
         if (isTerminalRunEvent(event) && this.state.selectedSessionId(projectId) !== event.sessionId) {
-          void this.projects.updateSessionMetadata(this.projects.requireProject(projectId), event.sessionId, { unread: true }).catch(() => undefined);
           if (update.snapshot.state.kind === "idle") {
             void runtime.releaseSessionClaim(event.sessionId).catch(() => undefined);
           }
@@ -604,6 +660,30 @@ export class DesktopAgentManager {
       const isPrimary = runtime.runtimeSnapshots().find((entry) => entry.sessionId === sessionId)?.primary === true;
       this.emit(projectId, update, { sessionId, primary: isPrimary });
     });
+    return () => { subscribed = false; observed.clear(); unsubscribe(); };
+  }
+
+  /** Only unread/read publication uses this queue; catalog CAS still protects unrelated edits. */
+  private queueSessionMetadata<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionMetadataTails.get(key);
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason: unknown) => void;
+    const pending = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    this.sessionMetadataTails.set(key, pending);
+    const start = (): void => { try { resolve(operation()); } catch (error) { reject(error); } };
+    if (previous) void previous.then(start, start);
+    else start();
+    void pending.then(() => {
+      if (this.sessionMetadataTails.get(key) === pending) this.sessionMetadataTails.delete(key);
+    }, () => {
+      if (this.sessionMetadataTails.get(key) === pending) this.sessionMetadataTails.delete(key);
+    });
+    return pending;
+  }
+
+  private admitSessionRead(projectId: string, sessionId: string): void {
+    const key = sessionReadKey(projectId, sessionId);
+    this.sessionReadEpochs.set(key, (this.sessionReadEpochs.get(key) ?? 0) + 1);
   }
 
   async listProjectBranches(projectId: string): Promise<DesktopGitBranch[]> {
@@ -639,6 +719,7 @@ export class DesktopAgentManager {
   }
 
   async openSession(projectId: string, sessionId: string): Promise<DesktopSessionDocument> {
+    this.admitSessionRead(projectId, sessionId);
     const lifetime = this.runtimeLifetime(projectId);
     const project = this.projects.requireProject(projectId);
     if (this.draftSessionIds.get(projectId) !== sessionId) this.draftSessionIds.delete(projectId);
@@ -717,8 +798,10 @@ export class DesktopAgentManager {
   }
 
   async markSessionRead(projectId: string, sessionId: string, expectedRevision?: string): Promise<DesktopSessionMetadataReceipt> {
-    const revision = await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision);
-    const record = await this.projects.markSessionRead(this.projects.requireProject(projectId), sessionId, revision);
+    this.admitSessionRead(projectId, sessionId);
+    const revision = this.resolvePendingSessionRead(projectId, sessionId, expectedRevision);
+    const record = await this.queueSessionMetadata(sessionReadKey(projectId, sessionId), async () =>
+      await this.projects.markSessionRead(this.projects.requireProject(projectId), sessionId, await revision));
     return sessionMetadataReceipt(projectId, record, { unread: record.unread === true });
   }
 
@@ -2616,6 +2699,8 @@ export class DesktopAgentManager {
     for (const operation of this.modelLoginOperations.values()) operation.abort(new DOMException("Desktop is shutting down", "AbortError"));
     this.modelLoginOperations.clear();
     this.stagedSettingsCredentials.clear();
+    await Promise.allSettled(this.sessionUnreadRecoveries);
+    await Promise.allSettled(this.sessionMetadataTails.values());
     await Promise.allSettled([...this.pendingSessionReads.values()].map(({ promise }) => promise));
     this.pendingSessionReads.clear();
     await Promise.allSettled(this.pendingSessionReadPublications);
@@ -3129,9 +3214,11 @@ export class DesktopAgentManager {
 
   private scheduleSessionRead(project: DesktopProject, sessionId: string, initialRevision: string | undefined): void {
     if (this.closing) return;
+    this.admitSessionRead(project.id, sessionId);
     const key = sessionReadKey(project.id, sessionId);
     const pending = this.pendingSessionReads.get(key);
-    if (pending && pending.initialRevision === initialRevision) return;
+    const unreadGeneration = this.sessionUnreadGenerations.get(key) ?? 0;
+    if (pending && pending.initialRevision === initialRevision && pending.unreadGeneration === unreadGeneration) return;
     const onIndexRefresh = (completion: Promise<void>): void => {
       this.pendingSessionReadPublications.add(completion);
       void completion.then(() => this.pendingSessionReadPublications.delete(completion), () => this.pendingSessionReadPublications.delete(completion));
@@ -3139,13 +3226,11 @@ export class DesktopAgentManager {
     let promise: Promise<SessionCatalogRecord>;
     try {
       // 新 revision 的已读写入接在旧请求后，保证替换映射后关闭仍能等完全部写入。
-      promise = pending === undefined
-        ? this.projects.markSessionRead(project, sessionId, undefined, onIndexRefresh)
-        : pending.promise.catch(() => undefined).then(() => this.projects.markSessionRead(project, sessionId, undefined, onIndexRefresh));
+      promise = this.queueSessionMetadata(key, async () => await this.projects.markSessionRead(project, sessionId, undefined, onIndexRefresh));
     } catch {
       return;
     }
-    this.pendingSessionReads.set(key, { initialRevision, promise });
+    this.pendingSessionReads.set(key, { initialRevision, unreadGeneration, promise });
     // 保留已完成的 promise 一小段时间，让紧接着发生的置顶/改名仍能拿到后台写入后的
     // revision；否则清理微任务和用户点击之间会出现一个很窄的 CAS 冲突窗口。
     void promise.then(() => {
