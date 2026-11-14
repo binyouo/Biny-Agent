@@ -729,6 +729,8 @@ function SidebarChrome({ collapsed, floating = false, onNewTask, onSearch, onTog
  * 移动也不再改变宽度，松手时再提交最终宽度。
  */
 function SidebarResizer({ width, onResizeStart, onWidthChange, onResizeEnd }: { width: number } & SidebarResizeHandlers): React.JSX.Element {
+  const finishResize = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => finishResize.current?.(), []);
   const resizeWithKeyboard = (direction: -1 | 1): void => {
     const next = clampSidebarWidth(width + direction * 16);
     onWidthChange(next);
@@ -737,27 +739,35 @@ function SidebarResizer({ width, onResizeStart, onWidthChange, onResizeEnd }: { 
   const startResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     event.preventDefault();
     event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    finishResize.current?.();
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    target.setPointerCapture(pointerId);
     onResizeStart();
     const startX = event.clientX;
     const startWidth = width;
     let currentWidth = startWidth;
     let active = true;
     const move = (moveEvent: PointerEvent): void => {
+      if (!active || moveEvent.pointerId !== pointerId) return;
       currentWidth = clampSidebarWidth(startWidth + moveEvent.clientX - startX);
       onWidthChange(currentWidth);
     };
-    const stop = (): void => {
-      if (!active) return;
+    const stop = (endEvent?: PointerEvent): void => {
+      if (!active || (endEvent && endEvent.pointerId !== pointerId)) return;
       active = false;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
+      target.removeEventListener("lostpointercapture", stop);
+      finishResize.current = undefined;
       onResizeEnd(currentWidth);
     };
+    finishResize.current = stop;
+    target.addEventListener("lostpointercapture", stop);
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
-    window.addEventListener("pointercancel", stop, { once: true });
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   };
   return (
     <div
