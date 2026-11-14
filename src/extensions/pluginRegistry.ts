@@ -358,6 +358,9 @@ async function installManagedPlugin(options: {
         try {
           const oldStat = await fs.lstat(targetDirectory);
           if (oldStat.isSymbolicLink() || !oldStat.isDirectory()) throw new Error("现有 Plugin 目录不安全。");
+          // A same-named local directory is not proof of a managed installation.
+          // Check ownership under the manifest lock before rotating any files.
+          if (old?.directory !== options.plugin.id) throw new Error("现有 Plugin 目录未登记为此插件的受管目录，无法安全覆盖；请先移走或备份该目录。");
           await fs.rename(targetDirectory, backupDirectory);
           hadOldDirectory = true;
         } catch (error) {
