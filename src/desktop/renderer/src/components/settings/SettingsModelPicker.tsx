@@ -140,7 +140,7 @@ export function SettingsModelPicker({
         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || (searching && ["Home", "End"].includes(event.key))) return;
         event.preventDefault();
         event.stopPropagation();
-        if (!expanded) { setQuery(""); setOpen(true); return; }
+        if (!expanded) { setQuery(""); onOpen?.(); setOpen(true); return; }
         if (!options.length) return;
         const current = options.indexOf(document.activeElement as HTMLButtonElement);
         const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
