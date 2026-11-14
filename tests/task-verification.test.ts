@@ -1458,7 +1458,7 @@ async function persistedCandidate(root: string, contract: TaskVerificationContra
   return {
     output,
     definitionFingerprint: await fingerprintTaskVerificationDefinitions(root, contract, verificationIgnore),
-    repairScope: { enforcement: "post_execution_change_guard", changedPaths: [], violationPaths: [] }
+    repairScope: { version: 2, enforcement: "post_execution_change_guard", changedPaths: [], violationPaths: [] }
   };
 }
 

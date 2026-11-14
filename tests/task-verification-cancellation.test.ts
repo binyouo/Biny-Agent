@@ -307,7 +307,7 @@ await test("signal-only cancellation during passed-evidence reuse never complete
     assert.equal(evidence.status, "passed");
     tasks.transition(task.taskRunId, "verifying", {
       attemptId: attempt.attemptId, verification: evidence,
-      artifacts: { output: "persisted candidate", definitionFingerprint, artifactFingerprint: evidence.artifactFingerprint, repairScope: { enforcement: "post_execution_change_guard", changedPaths: [], violationPaths: [] } }
+      artifacts: { output: "persisted candidate", definitionFingerprint, artifactFingerprint: evidence.artifactFingerprint, repairScope: { version: 2, enforcement: "post_execution_change_guard", changedPaths: [], violationPaths: [] } }
     });
     const controller = new AbortController();
     const restore = observeReads((_filename, stream) => stream.once("data", () => controller.abort()));
