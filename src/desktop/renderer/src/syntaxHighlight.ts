@@ -46,6 +46,14 @@ function getHighlighter(): Promise<HighlighterCore> {
  */
 const highlightLimit = 40_000;
 
+// Reopening a file or code detail should not tokenize unchanged source again.
+// Keep only successful results in this renderer's memory, bounded by both count
+// and retained UTF-16 characters (source plus generated markup). Never persist.
+const resultCache = new Map<string, { result: HighlightedCode; size: number }>();
+const cacheEntryLimit = 32;
+const cacheCharacterLimit = 2_000_000;
+let cachedCharacters = 0;
+
 export interface HighlightedCode {
   html: string;
   language?: string;
@@ -112,6 +120,13 @@ async function highlight(content: string, language?: string): Promise<Highlighte
   if (!language || content.length > highlightLimit || !(language in bundledLanguages)) {
     return { html: escapeHtml(content), language };
   }
+  const key = `${language}\0${content}`;
+  const cached = resultCache.get(key);
+  if (cached) {
+    resultCache.delete(key);
+    resultCache.set(key, cached);
+    return { ...cached.result };
+  }
   try {
     const highlighter = await getHighlighter();
     // 上面已确认语言在 bundledLanguages 里，这里的强转只是类型收窄
@@ -130,7 +145,22 @@ async function highlight(content: string, language?: string): Promise<Highlighte
       themes: { light: LIGHT_THEME, dark: DARK_THEME },
       defaultColor: false
     });
-    return { html: stripPreWrapper(html), language };
+    const result = { html: stripPreWrapper(html), language };
+    const size = key.length + result.html.length;
+    if (size <= cacheCharacterLimit) {
+      // Concurrent first requests may finish after another request cached this key.
+      const previous = resultCache.get(key);
+      if (previous) { cachedCharacters -= previous.size; resultCache.delete(key); }
+      while (resultCache.size >= cacheEntryLimit || cachedCharacters + size > cacheCharacterLimit) {
+        const oldest = resultCache.entries().next().value;
+        if (!oldest) break;
+        resultCache.delete(oldest[0]);
+        cachedCharacters -= oldest[1].size;
+      }
+      resultCache.set(key, { result: { ...result }, size });
+      cachedCharacters += size;
+    }
+    return result;
   } catch {
     return { html: escapeHtml(content), language };
   }
