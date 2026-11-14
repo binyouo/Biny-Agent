@@ -171,8 +171,6 @@ interface RuntimeQueuedMessage {
 
 interface SessionLeaseState {
   lease: SessionLease | undefined;
-  acquired: boolean;
-  releaseOnCompletion: boolean;
 }
 
 /**
@@ -1010,21 +1008,22 @@ export class InteractiveAgentRuntime {
 
   private acquireSessionLease(sessionId: string): SessionLeaseState {
     const current = this.sessionLease;
-    if (current?.sessionId === sessionId) return { lease: current, acquired: false, releaseOnCompletion: false };
+    if (current?.sessionId === sessionId) return { lease: current };
     current?.close();
     this.sessionLease = undefined;
     if (this.sessionWriterClaim?.sessionId === sessionId) {
       this.sessionLease = this.sessionWriterClaim;
-      return { lease: this.sessionLease, acquired: true, releaseOnCompletion: false };
+      return { lease: this.sessionLease };
     }
-    if (!this.sessionLeases) return { lease: undefined, acquired: false, releaseOnCompletion: false };
+    if (!this.sessionLeases) return { lease: undefined };
     const lease = this.sessionLeases.acquire(sessionId);
     this.sessionLease = lease;
-    return { lease, acquired: true, releaseOnCompletion: true };
+    return { lease };
   }
 
   private releaseSessionLease(state: SessionLeaseState): void {
-    if (!state.acquired || !state.releaseOnCompletion || !state.lease || this.sessionLease !== state.lease) return;
+    // claim 可在维护期间取得或释放；以收尾时的归属为准，不能沿用准入快照。
+    if (!state.lease || this.sessionLease !== state.lease || this.sessionWriterClaim === state.lease) return;
     state.lease.close();
     this.sessionLease = undefined;
   }
