@@ -105,6 +105,11 @@ export class SemanticMemoryRetriever {
     const eligibleEntryIds = new Set(snapshot.entries.filter((entry) => entryMatchesMemorySearchScope(entry, options)
         && (this.options.allowEntry?.(entry) ?? true)
         && (options.allowEntry?.(entry) ?? true)).map((entry) => entry.id));
+    options.signal?.throwIfAborted();
+    // No scoped fact can match: avoid loading models or sending an unnecessary rewrite/embed request.
+    if (eligibleEntryIds.size === 0) return {
+      ...emptySearchResult(snapshot), originalQuery: safeQuery
+    };
     const semanticPerfStartedAt = perfNow();
     const semantic = await this.semanticSearch(safeQuery, options.limit, options.signal, options.threshold, options.rewriteQuery,
       eligibleEntryIds, options.automatic !== true);
