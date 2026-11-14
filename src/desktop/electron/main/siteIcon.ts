@@ -91,16 +91,23 @@ async function fetchBounded(
       signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
     });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
+      await response.body?.cancel().catch(() => undefined);
       const location = response.headers.get("location");
       if (!location || redirects === maxRedirects) return undefined;
       url = new URL(location, url);
       if (url.username || url.password) return undefined;
       continue;
     }
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return undefined;
+    }
     const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
     const declaredSize = Number(response.headers.get("content-length"));
-    if (Number.isFinite(declaredSize) && declaredSize > maxBytes) return undefined;
+    if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+      await response.body?.cancel().catch(() => undefined);
+      return undefined;
+    }
     const reader = response.body?.getReader();
     if (!reader) return undefined;
     const chunks: Uint8Array[] = [];
