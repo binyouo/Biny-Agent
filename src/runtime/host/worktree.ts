@@ -77,8 +77,10 @@ export class WorktreeUnavailableError extends Error {
 export class WorktreeDirtyError extends Error {
   readonly code = "worktree_dirty";
 
-  constructor(readonly worktreePath: string) {
-    super(`Worktree ${worktreePath} contains uncommitted changes; it was kept.`);
+  constructor(readonly worktreePath: string, reason: "uncommitted-changes" | "hidden-index-flags" = "uncommitted-changes") {
+    super(reason === "hidden-index-flags"
+      ? `Worktree ${worktreePath} has assume-unchanged or skip-worktree index flags that can hide local edits. The checkout was kept; inspect those files and clear the flags before retrying cleanup.`
+      : `Worktree ${worktreePath} contains uncommitted changes; it was kept.`);
     this.name = "WorktreeDirtyError";
   }
 }
@@ -342,7 +344,7 @@ export class WorktreeManager {
       for (const record of [...records]) {
         if (record.taskRunId || record.status === "kept" || record.sessionId.startsWith("orphan:") || !present.has(path.resolve(record.worktreePath))) continue;
         if (catalogIds.has(record.sessionId) || await this.catalogRecordExists(record.sessionId)) continue;
-        const clean = await this.isClean(record.worktreePath);
+        const clean = await this.isClean(record.worktreePath) && !(await this.hasHiddenIndexEntries(record.worktreePath));
         const merged = clean && await this.isMergedIntoBase(record);
         if (merged) {
           await this.removeRecord(records, record, true);
@@ -369,6 +371,11 @@ export class WorktreeManager {
         record.status = "kept";
         await this.writeRecords(records);
         throw new WorktreeDirtyError(record.worktreePath);
+      }
+      if (await this.hasHiddenIndexEntries(record.worktreePath)) {
+        record.status = "kept";
+        await this.writeRecords(records);
+        throw new WorktreeDirtyError(record.worktreePath, "hidden-index-flags");
       }
       await this.git(["worktree", "remove", record.worktreePath], this.repoRoot, 30_000);
     }
@@ -429,6 +436,12 @@ export class WorktreeManager {
       && record.mergedSourceCommit !== undefined
       && (await this.git(["rev-parse", record.branch])).trim() === record.mergedSourceCommit
       && await this.isBranchAncestor(record.mergedCommit, record.baseBranch);
+  }
+
+  /** Status and unforced removal both trust index flags that may hide local edits. */
+  private async hasHiddenIndexEntries(directory: string): Promise<boolean> {
+    const entries = await this.git(["ls-files", "-v", "-z"], directory);
+    return entries.split("\0").some(entry => entry[0] === "S" || /^[a-z]/u.test(entry));
   }
 
   private async isClean(directory: string): Promise<boolean> {

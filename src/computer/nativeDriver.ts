@@ -177,8 +177,18 @@ export class NativeProcessDriver implements ComputerDriver {
 
   private armIdle(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
+    const host = this.host;
+    if (!host || host.closed || this.disposed || this.stopping) return;
     this.idleTimer = setTimeout(() => {
-      const host = this.host;
+      if (this.host !== host || host.closed || this.disposed || this.stopping) return;
+      this.idleTimer = undefined;
+      // A reply's timer may expire after another request has been admitted.
+      // Pending work is never idle; recent failed/cancelled requests also get
+      // an idle window without relying on every settlement path to rearm it.
+      if (this.pending.size > 0 || performance.now() - host.lastActivityAt < this.idleTimeout) {
+        this.armIdle();
+        return;
+      }
       void this.stopHost(host).catch(() => {
         if (this.host === host && this.enabled) { this.enabled = false; this.onExit(); }
       });
