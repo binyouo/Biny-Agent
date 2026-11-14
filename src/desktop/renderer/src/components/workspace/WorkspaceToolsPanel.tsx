@@ -23,21 +23,29 @@ export const WorkspaceToolsPanel = React.memo(function WorkspaceToolsPanel({ too
 
 const ToolRun = React.memo(function ToolRun({ tool }: { tool: TimelineTool }): React.JSX.Element {
   const input = typeof tool.args === "string" ? tool.args : JSON.stringify(tool.args);
-  const timestamp = tool.timestamp && Number.isFinite(Date.parse(tool.timestamp)) ? tool.timestamp : undefined;
   return <li className="tool-run-card" data-tool-call-id={tool.id}>
-    <div className="tool-run-heading">
-      <div className="tool-run-identity">
-        <div className="tool-run-name" title={tool.tool}>{tool.tool}</div>
-        <div className="tool-run-id" title={tool.id}>{tool.id}</div>
-      </div>
-      <ToolExecutionStatus status={tool.status} />
-    </div>
-    {timestamp !== undefined || tool.durationMs !== undefined ? <div className="tool-run-meta">
-      {timestamp !== undefined ? <span>Start: <time dateTime={timestamp}>{new Date(timestamp).toLocaleTimeString()}</time></span> : null}
-      {tool.durationMs !== undefined ? <span>Duration: {tool.durationMs < 1000 ? `${tool.durationMs}ms` : formatDuration(tool.durationMs)}</span> : null}
-    </div> : null}
-    {input !== undefined ? <div className="tool-run-input">{input}</div> : null}
-    {tool.error ? <div className="tool-run-error" role="alert">{tool.error}</div> : null}
+    <ToolRunContent id={tool.id} tool={tool.tool} status={tool.status} timestamp={tool.timestamp} durationMs={tool.durationMs} error={tool.error} input={input} />
     {tool.children?.length ? <ol className="tool-run-children" aria-label="内部工具调用">{tool.children.map(child => <ToolRun key={child.id} tool={child} />)}</ol> : null}
   </li>;
+});
+
+// Snapshot only display primitives: tool objects and nested args may be mutated in place.
+// Keep input serialization and child reconciliation outside this memo boundary.
+const ToolRunContent = React.memo(function ToolRunContent({ id, tool, status, timestamp: rawTimestamp, durationMs, error, input }: Pick<TimelineTool, "id" | "tool" | "status" | "durationMs" | "error"> & { timestamp?: string; input?: string }): React.JSX.Element {
+  const timestamp = rawTimestamp && Number.isFinite(Date.parse(rawTimestamp)) ? rawTimestamp : undefined;
+  return <>
+    <div className="tool-run-heading">
+      <div className="tool-run-identity">
+        <div className="tool-run-name" title={tool}>{tool}</div>
+        <div className="tool-run-id" title={id}>{id}</div>
+      </div>
+      <ToolExecutionStatus status={status} />
+    </div>
+    {timestamp !== undefined || durationMs !== undefined ? <div className="tool-run-meta">
+      {timestamp !== undefined ? <span>Start: <time dateTime={timestamp}>{new Date(timestamp).toLocaleTimeString()}</time></span> : null}
+      {durationMs !== undefined ? <span>Duration: {durationMs < 1000 ? `${durationMs}ms` : formatDuration(durationMs)}</span> : null}
+    </div> : null}
+    {input !== undefined ? <div className="tool-run-input">{input}</div> : null}
+    {error ? <div className="tool-run-error" role="alert">{error}</div> : null}
+  </>;
 });
