@@ -95,26 +95,24 @@ export async function forkSession(
 }
 
 /**
- * 向前找到最近一个不会切断工具调用配对的位置。
+ * 找到请求范围内最后一个不会切断工具调用配对的位置。
  *
- * 从请求点往回退，直到该前缀里每个 tool_call 都有配对的 tool_result。
+ * 单次扫描记录安全前缀，避免未完成的长后缀触发二次方回扫。
  * 消息回执或后续对话不是工具结果，不能使尚未配对的调用变成安全截断点。
  */
 function safeCutPoint(events: readonly SessionEvent[], requested: number): number {
-  for (let cut = requested; cut > 0; cut -= 1) {
-    if (!hasUnmatchedToolCalls(events.slice(0, cut))) return cut;
-  }
-  return 0;
-}
-
-function hasUnmatchedToolCalls(events: readonly SessionEvent[]): boolean {
   const open = new Set<string>();
-  for (const [index, event] of events.entries()) {
+  let safe = 0;
+  // Each prefix has the same call state as a forward scan. Remember its last
+  // empty state instead of rescanning every shorter prefix after interruption.
+  for (let index = 0; index < requested; index += 1) {
+    const event = events[index]!;
     if (event.type === "tool_call") {
       open.add(event.toolCallId ?? `sequence-${String(event.sequence ?? index)}`);
-      continue;
+    } else if (event.type === "tool_result") {
+      open.delete(event.toolCallId ?? `sequence-${String(event.sequence ?? index)}`);
     }
-    if (event.type === "tool_result") open.delete(event.toolCallId ?? `sequence-${String(event.sequence ?? index)}`);
+    if (open.size === 0) safe = index + 1;
   }
-  return open.size > 0;
+  return safe;
 }
