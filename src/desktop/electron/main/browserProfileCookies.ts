@@ -58,13 +58,12 @@ export async function readBrowserProfileCookies(profile: BrowserProfileRecord, k
   if (!source) throw new Error("浏览器配置没有 Cookie 数据库。");
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "biny-cookie-import-"));
   const copy = path.join(temporary, "Cookies");
+  let sourceDatabase: DatabaseSync | undefined;
   let database: DatabaseSync | undefined;
   try {
-    await fs.copyFile(source, copy);
-    for (const suffix of ["-wal", "-shm"]) {
-      try { await fs.copyFile(`${source}${suffix}`, `${copy}${suffix}`); }
-      catch (error) { if (!isNotFound(error)) throw error; }
-    }
+    sourceDatabase = new DatabaseSync(source, { readOnly: true });
+    // Snapshot through SQLite so a concurrent WAL checkpoint cannot omit committed cookies.
+    await backup(sourceDatabase, copy);
     database = new DatabaseSync(copy, { readOnly: true });
     // Chromium 的微秒时间戳超过 JS 安全整数；先转为精确文本，再用 BigInt 换算为秒。
     const rows = database.prepare("SELECT host_key, name, value, encrypted_value, path, CAST(expires_utc AS TEXT) AS expires_utc, is_secure, is_httponly, samesite FROM cookies LIMIT 100000").all() as Array<Record<string, unknown>>;
@@ -89,7 +88,7 @@ export async function readBrowserProfileCookies(profile: BrowserProfileRecord, k
         secure: row.is_secure === 1, httpOnly: row.is_httponly === 1, sameSite, expirationDate, hostOnly: !domain.startsWith(".") });
     }
     return { cookies, failed };
-  } finally { database?.close(); await fs.rm(temporary, { recursive: true, force: true }); }
+  } finally { database?.close(); sourceDatabase?.close(); await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
 export interface BrowserProfileHistoryEntry {
