@@ -294,6 +294,14 @@ export class DesktopProjectService {
       for (const file of paths) {
         if (!files.has(file) || file.includes("\0") || path.isAbsolute(file) || file.split("/").includes("..")) throw new Error("选择的文件路径无效，请刷新。");
         if (/U|AA|DD/u.test(files.get(file)!.status)) throw new Error("请先解决合并冲突再提交。");
+        // Literal pathspecs still recurse into directories. A tracked file
+        // replaced by a directory appears as a deletion plus untracked children;
+        // selecting that deletion must not stage those unselected descendants.
+        const current = await fs.lstat(path.join(project.path, file)).catch((error: unknown) => {
+          if (isNotFound(error)) return undefined;
+          throw error;
+        });
+        if (current?.isDirectory()) throw new Error("所选文件已变为目录，无法安全地按单文件提交；请在终端核对处理，尚未修改暂存区。");
       }
       temp = await fs.mkdtemp(path.join(os.tmpdir(), "biny-git-paths-"));
       const pathspec = path.join(temp, "paths");
