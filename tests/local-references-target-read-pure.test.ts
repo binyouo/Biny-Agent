@@ -176,22 +176,26 @@ async function main(): Promise<void> {
     assert.equal(JSON.stringify(rows[0]?.events.map((event) => event.content)), JSON.stringify(["one", "two"]));
     assert.equal(fake.parses(), 3);
   });
-  await check("AST caller contract narrows only resolve; search and allMessages remain full scans", () => {
-    const found: Array<{ method: string; args: string[] }> = [];
+  await check("AST caller contract narrows point references; search and allMessages remain full scans", () => {
+    const found: Array<{ method: string; callee: string; args: string[] }> = [];
     for (const method of methods) {
       const visit = (node: ts.Node): void => {
         if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-          && node.expression.expression.kind === ts.SyntaxKind.ThisKeyword && node.expression.name.text === "sessions") {
-          found.push({ method: method.name.getText(parsed), args: node.arguments.map((arg) => arg.getText(parsed)) });
+          && node.expression.expression.kind === ts.SyntaxKind.ThisKeyword
+          && ["sessions", "messageReferences"].includes(node.expression.name.text)) {
+          found.push({ method: method.name.getText(parsed), callee: node.expression.name.text,
+            args: node.arguments.map((arg) => arg.getText(parsed)) });
         }
         ts.forEachChild(node, visit);
       };
       visit(method);
     }
     assert.equal(JSON.stringify(found), JSON.stringify([
-      { method: "resolve", args: ["project", "threadId"] },
-      { method: "search", args: ["project"] },
-      { method: "allMessages", args: ["project"] }
+      { method: "resolve", callee: "sessions", args: ["project", "threadId"] },
+      { method: "search", callee: "sessions", args: ["project"] },
+      { method: "allMessages", callee: "messageReferences", args: ["projectId"] },
+      { method: "messageReferences", callee: "sessions", args: ["project", "threadId"] },
+      { method: "referenceForMessage", callee: "messageReferences", args: ["projectId", "threadId"] }
     ]));
   });
   console.log("Pure sessions fixture: " + passed + " passed, " + failures.length + " failed.");
