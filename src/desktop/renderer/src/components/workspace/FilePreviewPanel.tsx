@@ -278,22 +278,38 @@ const FileTree = memo(function FileTree({ path, query, directoryStates, expanded
         const isExpanded = isDirectory && expandedDirectories.has(entry.path);
         return (
           <div key={entry.path}>
-            <button role="treeitem" aria-expanded={isDirectory ? isExpanded : undefined} aria-selected={selectedPath === entry.path} className={`file-tree-row${isDirectory ? " is-directory" : ""}${selectedPath === entry.path ? " is-selected" : ""}`} onClick={() => isDirectory ? onToggleDirectory(entry.path) : onPreviewFile(entry.path)} onKeyDown={(event) => {
-              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                const rows = Array.from(event.currentTarget.closest('[role="tree"]')?.querySelectorAll<HTMLButtonElement>('[role="treeitem"]') ?? []);
-                const next = rows[rows.indexOf(event.currentTarget) + (event.key === "ArrowDown" ? 1 : -1)];
-                event.preventDefault(); next?.focus();
-              } else if (isDirectory && ((event.key === "ArrowRight" && !isExpanded) || (event.key === "ArrowLeft" && isExpanded))) { event.preventDefault(); onToggleDirectory(entry.path); }
-            }} style={{ paddingLeft: `${8 + depth * 16}px` }} type="button">
-              {isDirectory ? <span className={`file-tree-disclosure${isExpanded ? " is-expanded" : ""}`}><Icon name="chevron" size={13} /></span> : <span aria-hidden="true" className="file-tree-disclosure is-file-slot" />}
-              {isDirectory ? <Icon className="file-tree-folder-icon" name="folder" size={14} /> : <FileTypeMarker name={entry.name} />}
-              <span>{entry.name}</span>
-            </button>
+            <FileTreeRow path={entry.path} name={entry.name} isDirectory={isDirectory} isExpanded={isExpanded} isSelected={selectedPath === entry.path} depth={depth} onToggleDirectory={onToggleDirectory} onPreviewFile={onPreviewFile} />
             {isDirectory && isExpanded ? <FileTree directoryStates={directoryStates} depth={depth + 1} expandedDirectories={expandedDirectories} onPreviewFile={onPreviewFile} onToggleDirectory={onToggleDirectory} path={entry.path} query={query} selectedPath={selectedPath} showHidden={showHidden} /> : null}
           </div>
         );
       })}
     </div>
+  );
+});
+
+// Primitive display props preserve updates even when callers mutate entry objects.
+const FileTreeRow = memo(function FileTreeRow({ path, name, isDirectory, isExpanded, isSelected, depth, onToggleDirectory, onPreviewFile }: {
+  path: string;
+  name: string;
+  isDirectory: boolean;
+  isExpanded: boolean;
+  isSelected: boolean;
+  depth: number;
+  onToggleDirectory(path: string): void;
+  onPreviewFile(path: string): void;
+}): React.JSX.Element {
+  return (
+    <button role="treeitem" aria-expanded={isDirectory ? isExpanded : undefined} aria-selected={isSelected} className={`file-tree-row${isDirectory ? " is-directory" : ""}${isSelected ? " is-selected" : ""}`} onClick={() => isDirectory ? onToggleDirectory(path) : onPreviewFile(path)} onKeyDown={(event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        const rows = Array.from(event.currentTarget.closest('[role="tree"]')?.querySelectorAll<HTMLButtonElement>('[role="treeitem"]') ?? []);
+        const next = rows[rows.indexOf(event.currentTarget) + (event.key === "ArrowDown" ? 1 : -1)];
+        event.preventDefault(); next?.focus();
+      } else if (isDirectory && ((event.key === "ArrowRight" && !isExpanded) || (event.key === "ArrowLeft" && isExpanded))) { event.preventDefault(); onToggleDirectory(path); }
+    }} style={{ paddingLeft: `${8 + depth * 16}px` }} type="button">
+      {isDirectory ? <span className={`file-tree-disclosure${isExpanded ? " is-expanded" : ""}`}><Icon name="chevron" size={13} /></span> : <span aria-hidden="true" className="file-tree-disclosure is-file-slot" />}
+      {isDirectory ? <Icon className="file-tree-folder-icon" name="folder" size={14} /> : <FileTypeMarker name={name} />}
+      <span>{name}</span>
+    </button>
   );
 });
 
