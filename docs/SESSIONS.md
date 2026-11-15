@@ -135,6 +135,8 @@ Desktop 在主对话内为每个子代理展示独立卡片，头部以简短任
 
 ## 导出与导入
 
+Desktop 消息菜单的“复制为 Markdown”保留消息源码中的不换行空格（U+00A0），不会把代码或 JSON 字符串里的字面值改成普通空格；“复制为纯文本”沿用原有格式转换与排版空格处理。
+
 ```bash
 biny session export <session-id> --format biny --out session.json --json
 biny session import session.json --format biny --json
