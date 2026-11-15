@@ -124,7 +124,7 @@ function ImageLightbox({ src, alt, filename, getContent, onClose }: {
   const [dragging, setDragging] = useState(false);
   const panel = useRef<HTMLDivElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ clientX: number; clientY: number; x: number; y: number } | undefined>(undefined);
+  const drag = useRef<{ pointerId: number; clientX: number; clientY: number; x: number; y: number } | undefined>(undefined);
   const zoom = useCallback((factor: number) => setTransform(previous => ({ ...previous, scale: Math.min(5, Math.max(.5, previous.scale * factor)) })), []);
   const reset = (): void => setTransform({ scale: 1, x: 0, y: 0 });
   useEffect(() => {
@@ -158,8 +158,9 @@ function ImageLightbox({ src, alt, filename, getContent, onClose }: {
     return () => element.removeEventListener("wheel", wheel);
   }, [zoom]);
   const stopDrag = (event: React.PointerEvent<HTMLDivElement>): void => {
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (drag.current?.pointerId !== event.pointerId) return;
     drag.current = undefined; setDragging(false);
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
   return <div ref={panel} className="markdown-image-lightbox" role="dialog" aria-modal="true" aria-label={`预览 ${alt || filename}`}>
     <header className="markdown-image-lightbox-toolbar">
@@ -175,17 +176,17 @@ function ImageLightbox({ src, alt, filename, getContent, onClose }: {
     </header>
     <div ref={viewport} className={`markdown-image-lightbox-viewport${dragging ? " is-dragging" : ""}`}
       onPointerDown={(event) => {
-        if (event.button !== 0) return;
+        if (event.button !== 0 || drag.current) return;
         event.preventDefault();
         event.currentTarget.setPointerCapture?.(event.pointerId);
-        drag.current = { clientX: event.clientX, clientY: event.clientY, x: transform.x, y: transform.y }; setDragging(true);
+        drag.current = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, x: transform.x, y: transform.y }; setDragging(true);
       }}
       onPointerMove={(event) => {
-        if (!drag.current) return;
+        if (drag.current?.pointerId !== event.pointerId) return;
         const { clientX, clientY, x, y } = drag.current;
         setTransform(previous => ({ ...previous, x: x + event.clientX - clientX, y: y + event.clientY - clientY }));
       }}
-      onPointerUp={stopDrag} onPointerCancel={stopDrag}
+      onPointerUp={stopDrag} onPointerCancel={stopDrag} onLostPointerCapture={stopDrag}
       onDoubleClick={() => setTransform(previous => previous.scale > 1 ? { scale: 1, x: 0, y: 0 } : { ...previous, scale: 2 })}>
       <img src={src} alt={alt} draggable={false} style={{ transform: `scale(${transform.scale}) translate(${transform.x / transform.scale}px, ${transform.y / transform.scale}px)` }} />
     </div>

@@ -7,6 +7,7 @@
 import type { ModelChoice } from "../../../llm/ModelRegistry.js";
 import type { InteractiveRuntimeSnapshot } from "../../../runtime/agentEvents.js";
 import type { ContextTokenBreakdown, SessionContextUsage, UsageSummary } from "../../../session/metadata.js";
+import type { SessionEvent } from "../../../session/recorder.js";
 import type { DesktopSessionDocument } from "../../protocol.js";
 import { lastReportedInputTokens } from "./app/desktopState.js";
 
@@ -28,15 +29,26 @@ export function resolveSessionContextUsage({ sessionId, document, runtimeInfo, m
 }): ContextUsage | undefined {
   const info = sessionId === undefined || runtimeInfo?.sessionId === sessionId ? runtimeInfo : undefined;
   const currentDocument = document?.session.id === sessionId ? document : undefined;
-  const reversedEvents = currentDocument?.events.slice().reverse() ?? [];
-  const persisted = reversedEvents.find((event) => (
-    (event.type === "assistant_message" || event.type === "user_message") && !event.auditOnly && event.contextState !== undefined
-  ));
-  const checkpoint = reversedEvents.find((event) => event.type === "context_checkpoint");
-  const checkpointIsNewer = checkpoint && (!persisted || reversedEvents.indexOf(checkpoint) < reversedEvents.indexOf(persisted));
+  const events = currentDocument?.events ?? [];
+  let persisted: Extract<SessionEvent, { type: "assistant_message" | "user_message" }> | undefined;
+  let checkpoint: Extract<SessionEvent, { type: "context_checkpoint" }> | undefined;
+  let assistant: Extract<SessionEvent, { type: "assistant_message" }> | undefined;
+  // Only checkpoints newer than the latest budget can invalidate it. Walk the
+  // tail once without copying long histories; do not cache mutable event arrays.
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]!;
+    if (event.type === "context_checkpoint") checkpoint ??= event;
+    if ((event.type === "assistant_message" || event.type === "user_message") && !event.auditOnly) {
+      if (event.type === "assistant_message") assistant ??= event;
+      if (event.contextState !== undefined) {
+        persisted = event;
+        break;
+      }
+    }
+  }
   const budget = liveBudget ?? (persisted && "contextState" in persisted ? persisted.contextState?.budget : undefined);
   let budgetModelAlias = budget?.modelAlias;
-  const usageEvent = persisted ?? reversedEvents.find((event) => event.type === "assistant_message" && !event.auditOnly);
+  const usageEvent = persisted ?? assistant;
   if (!liveBudget && !budgetModelAlias && usageEvent?.type === "assistant_message") {
     const { usage, contextState } = usageEvent;
     // 旧注入模型没有预算 alias；只用同条请求的连接身份恢复，不能借当前聊天选择或跨网关猜测。
@@ -53,7 +65,7 @@ export function resolveSessionContextUsage({ sessionId, document, runtimeInfo, m
   const contextWindow = capacity?.contextWindow;
   if (!contextWindow) return undefined;
   // checkpoint 可先于后续预算落盘；恢复时不能把压缩前的实测量继续当成当前请求。
-  if (!liveBudget && checkpointIsNewer) {
+  if (!liveBudget && checkpoint) {
     if (checkpoint.tokensAfter === undefined) return undefined;
     return { usedTokens: checkpoint.tokensAfter, contextWindow, contextWindowIsFallback: capacity?.contextWindowIsFallback ?? true, source: "estimated" };
   }
