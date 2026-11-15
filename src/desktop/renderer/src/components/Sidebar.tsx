@@ -879,6 +879,11 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
     return byParent;
   }, [sessions, flat]);
   const rows = useMemo(() => {
+    // Intl construction is expensive. Share one formatter within this render,
+    // not globally, so a later render still observes system time-zone changes.
+    let dateFormatter: Intl.DateTimeFormat | undefined;
+    const formatUpdatedAt = (value: string): string => sidebarSessionUpdatedAt(value,
+      dateFormatter ??= new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }));
     // 子会话仍通过折叠容器表达从属关系，但标题列保持统一，避免同一列表中
     // 仅因父子关系让可用宽度忽长忽短。
     let rowIndex = 0;
@@ -894,6 +899,7 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
       const nextCursor = sessionNextCursors.get(sessionKey(session));
       return [
         <SessionTreeRow
+          formatUpdatedAt={formatUpdatedAt}
           actions={actions}
           expandable={expandable}
           expanded={expanded}
@@ -934,6 +940,7 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
 // 内联 ref 回调会在每次渲染时先注销再注册，hook 的“高亮行被注销”分支会把
 // 点亮状态立刻清掉，高亮永远出不来，因此行拆成独立组件。
 function SessionTreeRow({
+  formatUpdatedAt,
   actions,
   expandable,
   expanded,
@@ -947,6 +954,7 @@ function SessionTreeRow({
   onSelect,
   onToggle
 }: {
+  formatUpdatedAt(value: string): string;
   actions: SessionRowActions;
   expandable: boolean;
   expanded: boolean;
@@ -968,7 +976,7 @@ function SessionTreeRow({
   const title = session.title || session.firstUserMessage || "新对话";
   // 运行中时右侧位置让给 spinner，不再显示相对时间。
   const meta = running ? undefined : sidebarSessionMeta(session);
-  const metaTitle = meta ? sidebarSessionUpdatedAt(session.updatedAt) : undefined;
+  const metaTitle = meta ? formatUpdatedAt(session.updatedAt) : undefined;
   const worktree = session.isolation === "worktree";
   const accessibleLabel = worktree
     ? [title, "Git 工作树", metaTitle].filter((value): value is string => Boolean(value)).join(" · ")
@@ -1279,11 +1287,8 @@ function sidebarSessionMeta(session: DesktopSessionSummary): string | undefined 
   return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
-function sidebarSessionUpdatedAt(value: string): string {
+function sidebarSessionUpdatedAt(value: string, formatter: Intl.DateTimeFormat): string {
   const updatedAt = Date.parse(value);
   if (!Number.isFinite(updatedAt)) return "未知时间";
-  return new Intl.DateTimeFormat("zh-CN", {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(new Date(updatedAt));
+  return formatter.format(new Date(updatedAt));
 }
