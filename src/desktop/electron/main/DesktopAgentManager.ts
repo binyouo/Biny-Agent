@@ -595,6 +595,7 @@ export class DesktopAgentManager {
       }
       if (event && isTerminalRunEvent(event)) observed.delete(event.sessionId);
       if (!event && update.snapshot.state.kind === "idle") {
+        this.projectEvents(projectId).delete(id);
         const candidate = observed.get(id);
         if (candidate && !candidate.pending) {
           const current = (admitted = false): boolean => subscribed && (admitted || !this.closing)
