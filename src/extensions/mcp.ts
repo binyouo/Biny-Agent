@@ -321,7 +321,12 @@ export class McpToolHost {
   }
 
   listServers(): McpServerStatus[] {
-    return [...this.servers.values()].map((server) => ({
+    // 保留未清理完的诊断，但不恢复连接归属；同名替换只展示当前连接的状态。
+    const visible = new Map(this.servers);
+    for (const server of this.retiredLocalServers) {
+      if (!visible.has(server.name)) visible.set(server.name, server);
+    }
+    return [...visible.values()].map((server) => ({
       ...server.status,
       toolNames: [...server.status.toolNames],
       promptNames: [...server.status.promptNames]
