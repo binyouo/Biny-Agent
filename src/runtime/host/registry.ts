@@ -39,6 +39,7 @@ export class SessionRuntimeRegistry {
   private closed = false;
   private closePromise: Promise<void> | undefined;
   private readonly cleanupFailures: unknown[] = [];
+  private readonly retirements = new Set<Promise<void>>();
 
   constructor(
     initial: { runtime: InteractiveRuntimeHandle; commands: CommandRuntime },
@@ -134,31 +135,29 @@ export class SessionRuntimeRegistry {
       throw new Error(`Runtime session ${actualSessionId} is already registered.`);
     }
 
-    if (current?.primary) {
-      const previous = current.runtime;
-      current.unsubscribe();
-      this.entries.delete(sessionId);
-      current.runtime = host.runtime;
-      current.commands = host.commands;
-      current.sessionId = actualSessionId;
+    // Publish the replacement before yielding, for secondary sessions as well
+    // as primary ones. Shutdown must always see the newly owned instance.
+    const previous = current.runtime;
+    current.unsubscribe();
+    current.runtime = host.runtime;
+    current.commands = host.commands;
+    current.lastActiveAt = Date.now();
+    current.unsubscribe = host.runtime.subscribe((update) => {
       current.lastActiveAt = Date.now();
-      current.unsubscribe = host.runtime.subscribe((update) => {
-        current.lastActiveAt = Date.now();
-        this.options.onUpdate(update, current);
-      });
-      this.entries.set(actualSessionId, current);
-      await previous.close();
+      this.options.onUpdate(update, current);
+    });
+    const retirement = Promise.resolve().then(() => previous.close()).catch(error => {
+      this.cleanupFailures.push(error);
+      throw error;
+    });
+    this.retirements.add(retirement);
+    try {
+      await retirement;
+      if (this.closed) throw new Error("Runtime Host session registry is closed.");
       return current;
+    } finally {
+      this.retirements.delete(retirement);
     }
-
-    if (current) {
-      this.entries.delete(sessionId);
-      current.unsubscribe();
-      await current.runtime.close();
-    }
-    const managed = this.attach(host, false);
-    this.entries.set(actualSessionId, managed);
-    return managed;
   }
 
   /** 删除主 session 前轮换主 runtime；这是删除语义，不与普通 restart 混用。 */
@@ -208,7 +207,7 @@ export class SessionRuntimeRegistry {
         await entry.runtime.close();
       }));
       // 工厂返回的晚到实例由 create 关闭；它确认清理前不能释放 owner。
-      await Promise.allSettled([...this.initializations.values()]);
+      await Promise.allSettled([...this.initializations.values(), ...this.retirements]);
       this.entries.clear();
       const failures = [...results.filter(result => result.status === "rejected").map(result => result.reason), ...this.cleanupFailures];
       if (failures.length) throw new AggregateError(failures, "Session Runtime cleanup failed.");
