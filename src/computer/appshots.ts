@@ -130,7 +130,9 @@ export class Appshots {
     this.snapshot.capturing = true;
     const id = randomUUID();
     try {
-      const config = await this.store.load(); this.snapshot.settings = config.appshots;
+      const config = await this.store.load();
+      if (this.closed) throw new Error("appshots_closed");
+      this.snapshot.settings = config.appshots;
       this.starting(id, config.appshots.target);
       const reply = await this.driver.daemonCommand("appshot_capture", { include_ax: true, async_context: true, appshot_id: id, wait_frontmost: true, exclude_bundles: [...ownBundles, ...config.activity.sensitiveApplications] });
       await this.accept(id, reply.data);
