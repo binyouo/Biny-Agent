@@ -729,6 +729,8 @@ function SidebarChrome({ collapsed, floating = false, onNewTask, onSearch, onTog
  * 移动也不再改变宽度，松手时再提交最终宽度。
  */
 function SidebarResizer({ width, onResizeStart, onWidthChange, onResizeEnd }: { width: number } & SidebarResizeHandlers): React.JSX.Element {
+  const finishResize = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => finishResize.current?.(), []);
   const resizeWithKeyboard = (direction: -1 | 1): void => {
     const next = clampSidebarWidth(width + direction * 16);
     onWidthChange(next);
@@ -737,27 +739,35 @@ function SidebarResizer({ width, onResizeStart, onWidthChange, onResizeEnd }: { 
   const startResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     event.preventDefault();
     event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    finishResize.current?.();
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    target.setPointerCapture(pointerId);
     onResizeStart();
     const startX = event.clientX;
     const startWidth = width;
     let currentWidth = startWidth;
     let active = true;
     const move = (moveEvent: PointerEvent): void => {
+      if (!active || moveEvent.pointerId !== pointerId) return;
       currentWidth = clampSidebarWidth(startWidth + moveEvent.clientX - startX);
       onWidthChange(currentWidth);
     };
-    const stop = (): void => {
-      if (!active) return;
+    const stop = (endEvent?: PointerEvent): void => {
+      if (!active || (endEvent && endEvent.pointerId !== pointerId)) return;
       active = false;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
+      target.removeEventListener("lostpointercapture", stop);
+      finishResize.current = undefined;
       onResizeEnd(currentWidth);
     };
+    finishResize.current = stop;
+    target.addEventListener("lostpointercapture", stop);
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
-    window.addEventListener("pointercancel", stop, { once: true });
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   };
   return (
     <div
@@ -839,7 +849,7 @@ function CollapsibleSessionList({ limit, rootPage, canLoadRoots, onLoadRoots, ..
   useEffect(() => {
     if (!shouldCollapse) setExpanded(false);
   }, [shouldCollapse]);
-  const visibleSessions = expanded ? props.sessions : props.sessions.slice(0, limit);
+  const visibleSessions = useMemo(() => expanded ? props.sessions : props.sessions.slice(0, limit), [expanded, props.sessions, limit]);
   return (
     <>
       <SessionList {...props} sessions={visibleSessions} />
@@ -866,7 +876,8 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
   const hover = useFluidHover(listRef, {
     isItemDisabled: (element) => element.closest("[inert]") !== null
   });
-  const rows = useMemo(() => {
+  // Topology depends only on the session snapshot, not selection, hover or layout.
+  const byParent = useMemo(() => {
     const byParent = new Map<string | undefined, DesktopSessionSummary[]>();
     const ids = new Set(sessions.map((session) => session.id));
     for (const session of sessions) {
@@ -875,6 +886,14 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
       siblings.push(session);
       byParent.set(parent, siblings);
     }
+    return byParent;
+  }, [sessions, flat]);
+  const rows = useMemo(() => {
+    // Intl construction is expensive. Share one formatter within this render,
+    // not globally, so a later render still observes system time-zone changes.
+    let dateFormatter: Intl.DateTimeFormat | undefined;
+    const formatUpdatedAt = (value: string): string => sidebarSessionUpdatedAt(value,
+      dateFormatter ??= new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }));
     // 子会话仍通过折叠容器表达从属关系，但标题列保持统一，避免同一列表中
     // 仅因父子关系让可用宽度忽长忽短。
     let rowIndex = 0;
@@ -890,6 +909,7 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
       const nextCursor = sessionNextCursors.get(sessionKey(session));
       return [
         <SessionTreeRow
+          formatUpdatedAt={formatUpdatedAt}
           actions={actions}
           expandable={expandable}
           expanded={expanded}
@@ -917,7 +937,7 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
       ];
     };
     return (byParent.get(undefined) ?? []).flatMap((session) => renderNode(session, new Set()));
-  }, [actions, flat, projectId, sessions, selectedSessionId, onSelectSession, onSessionContextMenu, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren, hover.registerItem]);
+  }, [actions, byParent, flat, projectId, selectedSessionId, onSelectSession, onSessionContextMenu, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren, hover.registerItem]);
   return (
     <div ref={listRef} className={`biny-sidebar-session-list${projectId ? " is-indented" : ""}`} {...hover.handlers}>
       <FluidHoverHighlight hover={hover} className="has-row-radius" />
@@ -930,6 +950,7 @@ function SessionList({ actions, flat = false, projectId, sessions, selectedSessi
 // 内联 ref 回调会在每次渲染时先注销再注册，hook 的“高亮行被注销”分支会把
 // 点亮状态立刻清掉，高亮永远出不来，因此行拆成独立组件。
 function SessionTreeRow({
+  formatUpdatedAt,
   actions,
   expandable,
   expanded,
@@ -943,6 +964,7 @@ function SessionTreeRow({
   onSelect,
   onToggle
 }: {
+  formatUpdatedAt(value: string): string;
   actions: SessionRowActions;
   expandable: boolean;
   expanded: boolean;
@@ -964,7 +986,7 @@ function SessionTreeRow({
   const title = session.title || session.firstUserMessage || "新对话";
   // 运行中时右侧位置让给 spinner，不再显示相对时间。
   const meta = running ? undefined : sidebarSessionMeta(session);
-  const metaTitle = meta ? sidebarSessionUpdatedAt(session.updatedAt) : undefined;
+  const metaTitle = meta ? formatUpdatedAt(session.updatedAt) : undefined;
   const worktree = session.isolation === "worktree";
   const accessibleLabel = worktree
     ? [title, "Git 工作树", metaTitle].filter((value): value is string => Boolean(value)).join(" · ")
@@ -1275,11 +1297,8 @@ function sidebarSessionMeta(session: DesktopSessionSummary): string | undefined 
   return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
-function sidebarSessionUpdatedAt(value: string): string {
+function sidebarSessionUpdatedAt(value: string, formatter: Intl.DateTimeFormat): string {
   const updatedAt = Date.parse(value);
   if (!Number.isFinite(updatedAt)) return "未知时间";
-  return new Intl.DateTimeFormat("zh-CN", {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(new Date(updatedAt));
+  return formatter.format(new Date(updatedAt));
 }

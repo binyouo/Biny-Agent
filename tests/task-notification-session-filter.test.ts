@@ -54,9 +54,17 @@ function compile<T>(source: string, bindings: Record<string, unknown>): T {
     finally { delete context.receiver; delete context.argumentsList; }
   } as T;
 }
-const list = compile<Store["list"]>(`({ ${method(storeSource, "DurableTaskRunStore", "list")} }).list`, {
+const makeList = (materialized: string[], byId: Map<string, Task>) => compile<Store["list"]>(`({ ${method(storeSource, "DurableTaskRunStore", "list")} }).list`, {
   toString: (value: unknown) => { assert.equal(typeof value, "string"); return value; },
-  toInteger: (value: unknown) => { assert.equal(Number.isSafeInteger(value), true); return value; }
+  toInteger: (value: unknown) => { assert.equal(Number.isSafeInteger(value), true); return value; },
+  toTaskRun: (row: { task_run_id: string }) => {
+    const original = byId.get(row.task_run_id);
+    assert.ok(original);
+    const { attempts: _attempts, ...value } = original;
+    materialized.push(value.taskRunId);
+    return value;
+  },
+  toTaskAttempt: (row: { artifacts_json: string }) => JSON.parse(row.artifacts_json) as Task["attempts"][number]
 });
 const terminal = storeSource.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "isTaskRunTerminal");
 assert.ok(terminal);
@@ -80,10 +88,18 @@ function fixture(rows: Task[]) {
   try {
     database.exec(`CREATE TABLE task_runs (task_run_id TEXT PRIMARY KEY, workspace_id TEXT, session_id TEXT,
       parent_run_id TEXT, status TEXT, task_json TEXT, created_at TEXT, updated_at TEXT, terminal_event_id TEXT, revision INTEGER)`);
-    const insert = database.prepare("INSERT INTO task_runs VALUES (?, ?, ?, NULL, ?, '{}', 'fixture', 'fixture', NULL, 0)");
-    for (const row of rows) insert.run(row.taskRunId, row.workspaceId, row.sessionId ?? null, row.status);
+    database.exec(`CREATE TABLE task_attempts (attempt_id TEXT, task_run_id TEXT, run_id TEXT, turn_id TEXT,
+      parent_run_id TEXT, status TEXT, high_water_sequence INTEGER, retry_safety TEXT, verification_json TEXT,
+      artifacts_json TEXT, failure_json TEXT, created_at TEXT, updated_at TEXT)`);
+    const insert = database.prepare("INSERT INTO task_runs VALUES (?, ?, ?, NULL, ?, ?, 'fixture', 'fixture', NULL, 0)");
+    const insertAttempt = database.prepare("INSERT INTO task_attempts (attempt_id, task_run_id, artifacts_json) VALUES (?, ?, ?)");
+    for (const row of rows) {
+      insert.run(row.taskRunId, row.workspaceId, row.sessionId ?? null, row.status, JSON.stringify(row));
+      for (const attempt of row.attempts) insertAttempt.run(attempt.attemptId, row.taskRunId, JSON.stringify(attempt));
+    }
     const byId = new Map(rows.map(row => [row.taskRunId, row]));
     const materialized: string[] = [];
+    const list = makeList(materialized, byId);
     const receipts = new Set<string>();
     const store: Store = { database, authority: { workspaceId: "workspace" }, assertOpen() {}, list,
       requireWithAttempts(id) { materialized.push(id); const value = byId.get(id); assert.ok(value); return value; },
@@ -91,7 +107,7 @@ function fixture(rows: Task[]) {
     };
     const snapshot = () => JSON.stringify(database.prepare("SELECT rowid, * FROM task_runs ORDER BY rowid").all());
     const before = snapshot();
-    return { store, materialized, receipts, snapshot,
+    return { store, list, materialized, receipts, snapshot,
       close() { try { assert.equal(snapshot(), before, "read methods must not mutate SQLite rows"); } finally { database.close(); } }
     };
   } catch (error) { database.close(); throw error; }
@@ -99,6 +115,7 @@ function fixture(rows: Task[]) {
 function normalize<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
 function compare(rows: Task[], receivingSessionId = "owner", budget = 6000, receipts: string[] = []) {
   const f = fixture(rows);
+  const list = f.list;
   try {
     for (const receipt of receipts) f.receipts.add(receipt);
     const channel: Channel = { tasks: f.store, sessionId: "owner", notifications };
@@ -114,7 +131,7 @@ function compare(rows: Task[], receivingSessionId = "owner", budget = 6000, rece
     assert.deepEqual(candidate, baseline);
     assert.equal(channel.sessionId, "owner", "receiving override must not rebind the channel");
     assert.equal(after.every(id => rows.find(row => row.taskRunId === id)?.sessionId === receivingSessionId), true,
-      "no unrelated task may reach requireWithAttempts");
+      "no unrelated task may reach materialization");
     return { baseline, candidate, before, after };
   } finally { f.close(); }
 }
@@ -185,7 +202,7 @@ test("list retains workspace, default, status, order, cursor and limit contracts
           cursor = page.nextCursor;
           assert.ok(pages < 49, "bounded traversal must finish");
         }
-        assert.deepEqual(seen, expected);
+        assert.deepEqual(normalize(seen), normalize(expected));
       }
     }
     const defaults = f.store.list();

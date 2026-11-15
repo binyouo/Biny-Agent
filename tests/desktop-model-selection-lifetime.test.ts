@@ -133,7 +133,7 @@ async function fixture(t: TestContext, options: { recovery?: boolean; settings?:
     settingsSnapshot: async (): Promise<DesktopSettingsSnapshot> => ({
       projectId: "a", hasRunningTasks: false, preferenceRevision: 1, configRevision: "1",
       themePreference: "light", fontPreference: { family: "system", size: 14 },
-      activity: defaultConfig.activity, identity: defaultConfig.identity, memory: defaultConfig.context.memory,
+      activity: defaultConfig.activity, identity: defaultConfig.context.identity, memory: defaultConfig.context.memory,
       compaction: defaultConfig.context.compaction, chatParams: defaultConfig.chat, toolExecutionMode: "code_mode",
       subagent: { enabled: false, runtime: "builtin" }, externalSubagentBlockers: [], permission: defaultConfig.permission,
       webSearch: defaultConfig.web.search, redaction: defaultConfig.redaction,
@@ -379,4 +379,66 @@ test("sidebar navigation and a receipt in one turn do not cross submission owner
     assert.equal(h.input(), actionText("send"));
     assert.equal(h.document.querySelector<HTMLTextAreaElement>('textarea[aria-label="任务输入"]')!.disabled, false);
   }
+});
+
+async function submitFromOpenModelMenu(h: Awaited<ReturnType<typeof fixture>>, text: string) {
+  await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+  await h.type(text);
+  await h.choose("beta");
+  const beta = [...h.document.querySelectorAll<HTMLButtonElement>('.model-picker-submenu-option')].find(button => button.textContent === "beta")!;
+  const input = h.document.querySelector<HTMLTextAreaElement>('textarea[aria-label="任务输入"]')!;
+  await h.React.act(async () => {
+    beta.focus();
+    const tab = new h.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    beta.dispatchEvent(tab);
+    assert.equal(tab.defaultPrevented, false, "the actual menu does not trap Tab");
+    // jsdom does not perform native Tab traversal. Simulate the result of
+    // traversing back to the composer, not a claim that one Tab reaches it.
+    input.focus();
+  });
+  assert.equal(h.document.activeElement, input);
+  assert.equal(h.document.querySelector('[data-composer-menu="model"]')!.getAttribute("aria-expanded"), "true");
+  const gamma = [...h.document.querySelectorAll<HTMLButtonElement>('.model-picker-submenu-option')].find(button => button.textContent === "gamma")!;
+  assert.ok(gamma);
+  await h.React.act(async () => input.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+  assert.equal(input.disabled, true);
+  assert.deepEqual(h.actions, []);
+  return gamma;
+}
+
+for (const kind of ["send", "slash"] as const) {
+  test(`open model menu retires while keyboard ${kind} waits for its selected model`, async t => {
+    const h = await fixture(t);
+    const text = kind === "send" ? "Keep the submitted selection" : "/tasks";
+    const gamma = await submitFromOpenModelMenu(h, text);
+    assert.ok(!gamma.isConnected || gamma.closest("[inert]"), "pending submission must retire the existing menu, not just disable its trigger");
+    // Exercise a retained event target too: the callback must not queue a new
+    // selection even before an exit animation has removed its DOM node.
+    await h.React.act(async () => {
+      gamma.dispatchEvent(new h.window.MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+      gamma.click();
+    });
+    assert.match(h.document.querySelector('.biny-model-pill[data-composer-menu="model"]')!.textContent ?? "", /beta/u);
+    await h.resolveSwitch(0);
+    assert.equal(h.switches.length, 1, "no hidden gamma request follows the submitted beta");
+    assert.deepEqual(h.actions, [{ kind, projectId: "a", sessionId: "session-a", input: text }]);
+    await h.choose("gamma");
+    assert.equal(h.switches.length, 2, "selection is available again for subsequent input");
+    assert.equal(h.switches[1]!.alias, "gamma");
+    await h.resolveSwitch(1);
+  });
+}
+
+test("retired model menu does not prevent correcting a rejected submitted selection", async t => {
+  const h = await fixture(t);
+  const gamma = await submitFromOpenModelMenu(h, "Keep the draft on failure");
+  assert.ok(!gamma.isConnected || gamma.closest("[inert]"));
+  await h.rejectSwitch(0);
+  assert.deepEqual(h.actions, []);
+  assert.equal(h.input(), "Keep the draft on failure");
+  await h.choose("gamma");
+  assert.equal(h.switches.length, 2);
+  await h.resolveSwitch(1);
+  await h.click('button[aria-label="发送消息"]');
+  assert.deepEqual(h.actions, [{ kind: "send", projectId: "a", sessionId: "session-a", input: "Keep the draft on failure" }]);
 });
