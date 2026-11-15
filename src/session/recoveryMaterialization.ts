@@ -136,13 +136,19 @@ export function assertRecoveryMaterializationSuffix(
   const ids = new Set(prefixEvents.flatMap(event => (event.type === "agent_message" || event.type === "user_message") && event.messageId ? [event.messageId] : []));
   const representedCalls = new Set(prefixEvents.flatMap(event => event.type === "agent_message" && event.message.role === "assistant"
     ? event.message.content.flatMap(part => part.type === "toolCall" ? [part.id] : []) : []));
+  // Preserve Array.find's first matching audit, including duplicate IDs. Build
+  // the index once rather than rescanning long history for every copied result.
+  const audits = new Map<string, Extract<SessionEvent, { type: "tool_result" }>>();
+  for (const event of prefixEvents) {
+    if (event.type === "tool_result" && event.toolCallId !== undefined && !audits.has(event.toolCallId)) audits.set(event.toolCallId, event);
+  }
   let cursor = prefixPlan.parentMessageId;
   for (const event of laterEvents) {
     if (event.type !== "agent_message") continue;
     const key = materializationKey(event.message);
     const message = expected.get(key);
     const toolCallId = event.message.role === "toolResult" ? event.message.toolCallId : undefined;
-    const audit = toolCallId === undefined ? undefined : prefixEvents.find(item => item.type === "tool_result" && item.toolCallId === toolCallId);
+    const audit = toolCallId === undefined ? undefined : audits.get(toolCallId);
     const isErrorValid = event.message.role !== "toolResult" || event.message.isError === undefined
       || audit?.type === "tool_result" && event.message.isError === (audit.executionStatus !== "succeeded");
     if (!message || !isDeepStrictEqual(materializationBody(event.message), materializationBody(message)) || !isErrorValid
