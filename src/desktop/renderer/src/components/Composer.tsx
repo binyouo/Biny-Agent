@@ -361,6 +361,7 @@ export const Composer = memo(function Composer({
       onWarning("ACP 当前支持文本新回合，请等待运行结束；附件、插话和历史改写暂不可用。");
       return;
     }
+    const originalSnapshot = draftState.getSnapshot();
     const originalDraft = currentDraft();
     const draft = suggestion === undefined ? originalDraft : { value: suggestion, tokens: [] };
     const sentAttachments = suggestion === undefined ? attachments : [];
@@ -415,6 +416,16 @@ export const Composer = memo(function Composer({
       try { await onPrepare?.(); }
       catch (error) { if (mounted.current) onSubmitError(errorMessage(error)); return; }
       if (!mounted.current || isSubmissionCurrent?.() === false) return;
+      // 引用、预填和截图回调仍可在准备期间更新草稿。此时旧提交不再拥有
+      // 当前草稿：既不能清空新内容，也不能未经确认把它加入本次发送。
+      const preparedSnapshot = draftState.getSnapshot();
+      if (suggestion === undefined && (preparedSnapshot.draft !== originalSnapshot.draft
+        || preparedSnapshot.history !== originalSnapshot.history
+        || preparedSnapshot.attachments !== originalSnapshot.attachments
+        || preparedSnapshot.pendingAttachments !== originalSnapshot.pendingAttachments)) {
+        onWarning("准备期间草稿已更新，内容已保留，请重新发送。");
+        return;
+      }
       if (!resume && slashCommand && (value === slashCommand.name || slashCommand.acceptsArgs)) {
         await runSlash(value, suggestion === undefined);
         return;
@@ -555,6 +566,8 @@ export const Composer = memo(function Composer({
   const fastModeSupported = selectedModel?.capabilities?.serviceTiers?.includes("priority") === true;
   const modelName = selectedModel?.displayName ?? runtimeInfo?.modelLabel ?? "未配置模型";
   const startModelSwitch = (alias: string, thinking: ThinkingSelection): void => {
+    // An already-open menu must respect the same admission boundary as its trigger.
+    if (!project || sessionWriterConflict || busy || submitFlightRef.current) return;
     const requestId = modelSwitchRequestRef.current + 1;
     modelSwitchRequestRef.current = requestId;
     setOptimisticModel({ alias, thinking });
@@ -634,6 +647,9 @@ export const Composer = memo(function Composer({
       : busy
         ? "当前附件或命令正在处理，请稍候。"
         : undefined;
+  useEffect(() => {
+    if (modelSwitchDisabled && menu === "model") setMenu(null);
+  }, [modelSwitchDisabled, menu]);
   useEffect(() => {
     if (capabilitySwitchDisabled && menu === "capabilities") setMenu(null);
   }, [capabilitySwitchDisabled, menu]);
@@ -815,7 +831,7 @@ export const Composer = memo(function Composer({
                   setMenu(null);
                   if (currentAlias) startModelSwitch(currentAlias, thinking);
                 }}
-                open={menu === "model"}
+                open={menu === "model" && !modelSwitchDisabled}
                 thinkingLevels={thinkingLevels}
               />
             </div>

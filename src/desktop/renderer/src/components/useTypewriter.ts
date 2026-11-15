@@ -137,7 +137,7 @@ export function useTypewriter(content: string, streaming: boolean): string {
 
   // 内容增长：登记到达速率并启动 reveal 循环
   useEffect(() => {
-    if (!streaming) {
+    if (!streaming || document.hidden) {
       syncImmediate(content);
       return;
     }
@@ -192,6 +192,15 @@ export function useTypewriter(content: string, streaming: boolean): string {
     }
     startLoop();
   }, [content, streaming, startLoop, syncImmediate]);
+
+  // Electron 隐藏窗口会暂停 rAF；不把已收到的正文留到再次聚焦时补播。
+  useEffect(() => {
+    const onVisibilityChange = (): void => {
+      if (document.hidden) syncImmediate(targetRef.current);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [syncImmediate]);
 
   // 卸载清理
   useEffect(() => () => {
