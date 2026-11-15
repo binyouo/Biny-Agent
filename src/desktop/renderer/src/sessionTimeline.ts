@@ -383,6 +383,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
 
 function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(events: SessionEvent[]): TimelineTurn[] } {
   const appendAssistant = createHistoricalAssistantAppender();
+  const appendModelRequest = createHistoricalModelRequestAppender();
   const metadataById = historicalUserMetadata(initialEvents, initialEvents);
   const turns: TimelineTurn[] = [];
   let current: TimelineTurn | undefined;
@@ -548,6 +549,7 @@ interface HistoricalVersionRecord {
 /** 新消息树的历史投影：同一 user turn 下只展示活动版本，工具事件按 runId 回填。 */
 function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
   const appendAssistant = createHistoricalAssistantAppender();
+  const appendModelRequest = createHistoricalModelRequestAppender();
   const activeEvents = activeSessionEventsForPath(events);
   const metadataById = historicalUserMetadata(events, activeEvents);
   const turns: TimelineTurn[] = [];
@@ -1612,11 +1614,19 @@ function injectedMemorySummaries(value: unknown): string[] | undefined {
 }
 
 /** 后台压缩/记忆请求不属于聊天执行 Trace；重复落盘只保留一次。 */
-function appendModelRequest(turn: TimelineTurn, metrics: TimelineModelRequest): void {
-  if (metrics.requestContext?.operation && metrics.requestContext.operation !== "agent") return;
-  const existing = turn.modelRequests?.find((item) => item.requestId === metrics.requestId);
-  if (existing) { if (!existing.output && metrics.output) existing.output = metrics.output; return; }
-  (turn.modelRequests ??= []).push({ ...metrics });
+function createHistoricalModelRequestAppender(): (turn: TimelineTurn, metrics: TimelineModelRequest) => void {
+  // Keep the index private to this history fold, including incremental appends.
+  const byTurn = new WeakMap<TimelineTurn, Map<string, TimelineModelRequest>>();
+  return (turn, metrics) => {
+    if (metrics.requestContext?.operation && metrics.requestContext.operation !== "agent") return;
+    let requests = byTurn.get(turn);
+    if (!requests) { requests = new Map(); byTurn.set(turn, requests); }
+    const existing = requests.get(metrics.requestId);
+    if (existing) { if (!existing.output && metrics.output) existing.output = metrics.output; return; }
+    const entry = { ...metrics };
+    requests.set(metrics.requestId, entry);
+    (turn.modelRequests ??= []).push(entry);
+  };
 }
 
 /** 终态仍保留实时正文时，把同 run 的已落盘指标附回去；按输入引用缓存，避免逐帧扫描 session。 */
