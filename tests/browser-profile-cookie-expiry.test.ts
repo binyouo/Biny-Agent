@@ -17,10 +17,10 @@ const functions = names.map(name => {
   return matches[0];
 });
 const allowedCalls = new Set([
-  "cookieDatabasePath", "fs.mkdtemp", "path.join", "os.tmpdir", "fs.copyFile", "isNotFound",
+  "cookieDatabasePath", "fs.mkdtemp", "path.join", "os.tmpdir", "backup", "isNotFound",
   "database.prepare", "database.prepare(\"SELECT host_key, name, value, encrypted_value, path, CAST(expires_utc AS TEXT) AS expires_utc, is_secure, is_httponly, samesite FROM cookies LIMIT 100000\").all",
   "pbkdf2Sync", "Date.now", "/^[.]?[a-z\\d-]+(?:\\.[a-z\\d-]+)*$/iu.test", "BigInt", "Math.min", "Number",
-  "Buffer.from", "Buffer.alloc", "decryptCookie", "cookies.push", "row.path.startsWith", "domain.startsWith", "database?.close", "fs.rm"
+  "Buffer.from", "Buffer.alloc", "decryptCookie", "cookies.push", "row.path.startsWith", "domain.startsWith", "database?.close", "sourceDatabase?.close", "fs.rm"
 ]);
 function inspect(node: ts.Node): void {
   if (ts.isCallExpression(node)) assert.ok(allowedCalls.has(node.expression.getText(source)), `unexpected call: ${node.expression.getText(source)}`);
@@ -67,23 +67,29 @@ async function read(rowsInput: readonly Row[]): Promise<ImportResult> {
   const calls: string[] = [];
   const key = Object.freeze({ synthetic: "not-a-key" });
   class InertDatabase {
-    constructor(target: string, options: { readOnly: boolean }) {
-      assert.equal(target, copiedPath);
+    constructor(readonly target: string, options: { readOnly: boolean }) {
+      assert.ok([databasePath, copiedPath].includes(target));
       assert.equal(options.readOnly, true);
       assert.deepEqual(Object.keys(options), ["readOnly"]);
-      calls.push("open");
+      calls.push(target === databasePath ? "open-source" : "open-copy");
     }
     prepare(sql: string): { all(): readonly Row[] } {
+      assert.equal(this.target, copiedPath);
       assert.equal(sql, query);
       calls.push("prepare");
       return { all() { calls.push("all"); return rows; } };
     }
-    close(): void { calls.push("close"); }
+    close(): void { calls.push(this.target === databasePath ? "close-source" : "close-copy"); }
   }
   const boundary = {
     Buffer, Uint8Array,
     Date: Object.freeze({ now: () => now * 1000 }),
     DatabaseSync: InertDatabase,
+    backup: async (database: InertDatabase, target: string) => {
+      assert.equal(database.target, databasePath);
+      assert.equal(target, copiedPath);
+      calls.push("backup");
+    },
     cookieDatabasePath: async (target: string) => { assert.equal(target, profilePath); calls.push("lookup"); return databasePath; },
     os: Object.freeze({ tmpdir: () => "/synthetic/tmp" }),
     path: Object.freeze({ join: (...parts: string[]) => {
@@ -94,14 +100,6 @@ async function read(rowsInput: readonly Row[]): Promise<ImportResult> {
     } }),
     fs: Object.freeze({
       mkdtemp: async (prefix: string) => { assert.equal(prefix, "/synthetic/tmp/biny-cookie-import-"); calls.push("mkdtemp"); return temporaryPath; },
-      copyFile: async (from: string, to: string) => {
-        const suffix = from.slice(databasePath.length);
-        assert.ok(["", "-wal", "-shm"].includes(suffix));
-        assert.equal(from, `${databasePath}${suffix}`);
-        assert.equal(to, `${copiedPath}${suffix}`);
-        calls.push(`copy${suffix}`);
-        if (suffix) throw Object.freeze({ code: "ENOENT" });
-      },
       rm: async (target: string, options: { recursive: boolean; force: boolean }) => {
         assert.equal(target, temporaryPath);
         assert.equal(options.recursive, true);
@@ -126,7 +124,7 @@ async function read(rowsInput: readonly Row[]): Promise<ImportResult> {
   } finally {
     assert.deepEqual(rows, before, "synthetic input rows remain unchanged");
     assert.deepEqual(profile, { profilePath });
-    assert.deepEqual(calls, ["lookup", "mkdtemp", "copy", "copy-wal", "copy-shm", "open", "prepare", "all", "derive-inert-key", "close", "rm"], "synthetic close and removal occur once, in order; not a real filesystem cleanup test");
+    assert.deepEqual(calls, ["lookup", "mkdtemp", "open-source", "backup", "open-copy", "prepare", "all", "derive-inert-key", "close-copy", "close-source", "rm"], "synthetic close and removal occur once, in order; not a real filesystem cleanup test");
   }
 }
 interface Case { name: string; rows: readonly Row[]; cookies: ResultCookie[]; failed?: number }

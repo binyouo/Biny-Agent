@@ -261,6 +261,10 @@ export function useDesktopEventBridge({
 
       for (const envelope of batch) {
         const event = envelope.event;
+        if (!event && envelope.snapshot.state?.kind === "idle") {
+          // A replay gap can recover the idle state without replaying its terminal event.
+          scheduleRefresh(envelope.projectId, envelope.snapshot.info.sessionId);
+        }
         if (event && (isTerminalRunEvent(event) || event.type === "session.title" || event.type === "compact.completed" || event.type === "compact.failed")) {
           scheduleRefresh(envelope.projectId, event.sessionId, event.type !== "session.title");
         }
