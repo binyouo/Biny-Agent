@@ -28,6 +28,14 @@ export function applyUpdatesToWorkspace(
   // 各会话的运行态按信封上的 sessionId 存进 sessionRuntimes。
   const runtime = projectUpdates.filter((update) => update.primary !== false).at(-1)?.snapshot ?? workspace.runtime;
   let sessionRuntimes = workspace.sessionRuntimes;
+  let copiedSessionRuntimes = false;
+  const writableSessionRuntimes = (): NonNullable<DesktopWorkspaceSnapshot["sessionRuntimes"]> => {
+    if (!copiedSessionRuntimes) {
+      sessionRuntimes = { ...sessionRuntimes };
+      copiedSessionRuntimes = true;
+    }
+    return sessionRuntimes!;
+  };
   let previousPrimarySnapshot = workspace.runtime;
   for (const update of projectUpdates) {
     const snapshot = update.snapshot;
@@ -42,12 +50,14 @@ export function applyUpdatesToWorkspace(
       && previousPrimarySnapshot.info.sessionId !== snapshot.info.sessionId
       && sessionRuntimes?.[previousPrimarySnapshot.info.sessionId] === previousPrimarySnapshot
     ) {
-      const nextSessionRuntimes = { ...sessionRuntimes };
-      delete nextSessionRuntimes[previousPrimarySnapshot.info.sessionId];
-      sessionRuntimes = nextSessionRuntimes;
+      delete writableSessionRuntimes()[previousPrimarySnapshot.info.sessionId];
     }
     const sessionId = update.sessionId ?? snapshot.info.sessionId;
-    if (sessionId) sessionRuntimes = { ...sessionRuntimes, [sessionId]: snapshot };
+    // Define an own data property, as the previous computed object-spread key did.
+    // Plain assignment would treat a session named "__proto__" as a setter.
+    if (sessionId) Object.defineProperty(writableSessionRuntimes(), sessionId, {
+      value: snapshot, enumerable: true, writable: true, configurable: true
+    });
     if (update.primary !== false) previousPrimarySnapshot = snapshot;
   }
   return {
