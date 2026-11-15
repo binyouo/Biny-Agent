@@ -766,7 +766,15 @@ async def runtime_cache_guard() -> AsyncIterator[None]:
     PACKAGE_CACHE.mkdir(parents=True, exist_ok=True)
     async with RUNTIME_CACHE_LOCK:
         with RUNTIME_CACHE_FILE_LOCK.open("a+") as lock_file:
-            await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_EX)
+            # A cancelled to_thread(flock) leaves its blocking worker alive;
+            # asyncio shutdown would still wait for the other process's setup.
+            # Keep contention cancellable without abandoning an OS lock waiter.
+            while True:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.1)
             try:
                 yield
             finally:
