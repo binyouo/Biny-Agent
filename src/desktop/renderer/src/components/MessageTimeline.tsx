@@ -788,7 +788,7 @@ function UserMessage({
       </div>
       {menuOpen && menuPosition ? createPortal(
         <div className="message-menu" data-direction={menuPosition.direction} ref={menuRef} role="menu" style={menuPosition.style}>
-          <button className="message-menu-item" onClick={() => { copyText(message.text); closeMenu(); }} role="menuitem" type="button"><Icon name="copy" size={14} /><span>复制为 Markdown</span></button>
+          <button className="message-menu-item" onClick={() => { copyText(message.text, true); closeMenu(); }} role="menuitem" type="button"><Icon name="copy" size={14} /><span>复制为 Markdown</span></button>
           <button className="message-menu-item" onClick={() => { copyText(plainTextFromMarkdown(message.text)); closeMenu(); }} role="menuitem" type="button"><Icon name="copy" size={14} /><span>复制为纯文本</span></button>
           {onCreateBranch ? <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button> : null}
           {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="at" size={14} /><span>引用消息</span></button> : null}
@@ -801,8 +801,8 @@ function UserMessage({
   );
 }
 
-function copyText(content: string): void {
-  void copyToClipboard(content);
+function copyText(content: string, preserveNonBreakingSpaces = false): void {
+  void copyToClipboard(content, { preserveNonBreakingSpaces });
 }
 
 function plainTextFromMarkdown(content: string): string {
@@ -934,7 +934,7 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
     setCopyingKind(kind);
     setCopiedKind(undefined);
     setCopyFailed(false);
-    const copied = await copyToClipboard(kind === "markdown" ? content : plainTextFromMarkdown(content));
+    const copied = await copyToClipboard(kind === "markdown" ? content : plainTextFromMarkdown(content), { preserveNonBreakingSpaces: kind === "markdown" });
     if (copyRequestRef.current !== request) return;
     request.pending = false;
     setCopyingKind(undefined);

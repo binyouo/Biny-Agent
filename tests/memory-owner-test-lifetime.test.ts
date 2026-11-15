@@ -15,10 +15,11 @@ for (const interrupted of [false, true]) test(`a detached test memory owner exit
   let child: ChildProcess | undefined;
   try {
     await writeFile(fixture, `
-import { writeFile } from 'node:fs/promises';
+import { rename, writeFile } from 'node:fs/promises';
 import { discoverMemoryOwner } from ${JSON.stringify(new URL("../src/runtime/memory/transport.ts", import.meta.url).href)};
 const owner = await discoverMemoryOwner(process.env.BINY_AGENT_DIR, process.env.BINY_AGENT_DIR);
-await writeFile(${JSON.stringify(pidFile)}, String(owner.pid));
+await writeFile(${JSON.stringify(pidFile + ".tmp")}, String(owner.pid));
+await rename(${JSON.stringify(pidFile + ".tmp")}, ${JSON.stringify(pidFile)});
 ${interrupted ? "setInterval(() => {}, 1000);" : ""}
 `);
     const env = { ...process.env, BINY_AGENT_DIR: root };
