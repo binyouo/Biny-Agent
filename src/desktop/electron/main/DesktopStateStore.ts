@@ -69,8 +69,16 @@ export class DesktopStateStore {
   constructor(private readonly filePath: string) {}
 
   async load(): Promise<void> {
+    let content: string;
     try {
-      const raw = JSON.parse(await fs.readFile(this.filePath, "utf8")) as Partial<PersistedDesktopState>;
+      content = await fs.readFile(this.filePath, "utf8");
+    } catch (error) {
+      // A failed read is not proof of corruption; preserve the file and current state.
+      if (isNotFound(error)) return;
+      throw error;
+    }
+    try {
+      const raw = JSON.parse(content) as Partial<PersistedDesktopState>;
       this.state = {
         version: 2,
         projects: Array.isArray(raw.projects) ? raw.projects.map((project) => ({
@@ -90,9 +98,7 @@ export class DesktopStateStore {
         preferenceRevision: validPreferenceRevision(raw.preferenceRevision) ? raw.preferenceRevision : 0,
         windowBounds: validWindowBounds(raw.windowBounds) ? raw.windowBounds : undefined
       };
-    } catch (error) {
-      // 文件不存在是首次启动，保留默认状态即可。
-      if (isNotFound(error)) return;
+    } catch {
       // 解析失败则把坏文件留档（便于事后排查），然后从默认状态重新开始。
       const corruptPath = `${this.filePath}.corrupt-${String(Date.now())}`;
       await fs.rename(this.filePath, corruptPath).catch(() => undefined);
@@ -268,8 +274,14 @@ export class DesktopStateStore {
 
   /** QuickChat 偏好是纯 UI 开关，逐字段直达落盘，不走设置事务的 CAS/revision。 */
   async setQuickChatSettings(settings: DesktopQuickChatSettings): Promise<void> {
-    this.state.quickChat = normalizeQuickChatSettings(settings);
-    await this.save();
+    const quickChat = normalizeQuickChatSettings(settings);
+    const snapshot = structuredClone(this.state);
+    await this.enqueueWrite(async () => {
+      const { revision, ...preferences } = this.settingsPreferences();
+      await this.writeSnapshot({ ...snapshot, ...preferences, preferenceRevision: revision, quickChat });
+      // Publish only after persistence succeeds, without replacing newer ordinary fields.
+      this.state.quickChat = quickChat;
+    });
   }
 
   quickChatBounds(): DesktopWindowBounds | undefined {
@@ -317,7 +329,7 @@ export class DesktopStateStore {
         return previous;
       }
       const preferenceRevision = previous.revision + 1;
-      await this.writeSnapshot({ ...snapshot, themePreference, fontPreference, preferenceRevision });
+      await this.writeSnapshot({ ...snapshot, themePreference, fontPreference, preferenceRevision, quickChat: this.quickChatSettings() });
       // Only commit our fields: ordinary mutations may have arrived during the I/O.
       this.state.themePreference = themePreference;
       this.state.fontPreference = { ...fontPreference };
@@ -354,7 +366,7 @@ export class DesktopStateStore {
     const snapshot = structuredClone(this.state);
     return this.enqueueWrite(async () => {
       const { revision, ...preferences } = this.settingsPreferences();
-      await this.writeSnapshot({ ...snapshot, ...preferences, preferenceRevision: revision });
+      await this.writeSnapshot({ ...snapshot, ...preferences, preferenceRevision: revision, quickChat: this.quickChatSettings() });
     });
   }
 
