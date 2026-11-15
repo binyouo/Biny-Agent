@@ -27,7 +27,7 @@ interface Artifacts {
   output: string;
   definitionFingerprint: string;
   artifactFingerprint: string;
-  repairScope: { enforcement: string; changedPaths: string[]; violationPaths: string[] };
+  repairScope: { version?: 2; enforcement: string; changedPaths: string[]; violationPaths: string[] };
 }
 interface Attempt { attemptId: string; taskRunId: string; status: string; verification: Evidence; artifacts: Artifacts }
 interface Task { taskRunId: string; status: string; revision: number; task: string; attempts: Attempt[] }
@@ -56,7 +56,7 @@ async function exercise(compiled: string, scenario: string) {
   const evidence = { status: "passed", marker: "original-evidence" };
   const artifacts: Artifacts = {
     output: "original-output", definitionFingerprint: "definition", artifactFingerprint: "artifact",
-    repairScope: { enforcement: "post_execution_change_guard", changedPaths: [], violationPaths: [] }
+    repairScope: { version: 2, enforcement: "post_execution_change_guard", changedPaths: [], violationPaths: [] }
   };
   let task: Task | undefined = { taskRunId: "task", status: "verifying", revision: 1, task: "fixture-definition", attempts: [
     { attemptId: "attempt-1", taskRunId: "task", status: "verifying", verification: evidence, artifacts }
