@@ -381,8 +381,29 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
   return scopeHistoricalLoadedSkills(events, createHistoricalTimelineFold(events).append(events));
 }
 
+/** Execution evidence attaches to the first call with an ID, unlike tool results. */
+function createHistoricalToolLookup(): (turn: TimelineTurn, id: string) => TimelineTool | undefined {
+  const indexes = new WeakMap<TimelineTurn, { count: number; firstById: Map<string, TimelineTool> }>();
+  return (turn, id) => {
+    let index = indexes.get(turn);
+    if (!index) {
+      index = { count: 0, firstById: new Map() };
+      indexes.set(turn, index);
+    }
+    // Historical folds only append tools. Index lazily so histories without execution
+    // evidence pay no indexing cost, and incremental appends retain their prior work.
+    while (index.count < turn.tools.length) {
+      const tool = turn.tools[index.count++]!;
+      if (!index.firstById.has(tool.id)) index.firstById.set(tool.id, tool);
+    }
+    return index.firstById.get(id);
+  };
+}
+
 function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(events: SessionEvent[]): TimelineTurn[] } {
   const appendAssistant = createHistoricalAssistantAppender();
+  const appendModelRequest = createHistoricalModelRequestAppender();
+  const findExecutionTool = createHistoricalToolLookup();
   const metadataById = historicalUserMetadata(initialEvents, initialEvents);
   const turns: TimelineTurn[] = [];
   let current: TimelineTurn | undefined;
@@ -505,7 +526,7 @@ function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(e
         }
         if (event.type === "agent_message") continue;
         if (event.type === "tool_execution") {
-          const tool = ensureTurn(event.time).tools.find((candidate) => candidate.id === event.toolCallId);
+          const tool = findExecutionTool(ensureTurn(event.time), event.toolCallId);
           if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
           continue;
         }
@@ -548,6 +569,8 @@ interface HistoricalVersionRecord {
 /** 新消息树的历史投影：同一 user turn 下只展示活动版本，工具事件按 runId 回填。 */
 function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
   const appendAssistant = createHistoricalAssistantAppender();
+  const appendModelRequest = createHistoricalModelRequestAppender();
+  const findExecutionTool = createHistoricalToolLookup();
   const activeEvents = activeSessionEventsForPath(events);
   const metadataById = historicalUserMetadata(events, activeEvents);
   const turns: TimelineTurn[] = [];
@@ -713,7 +736,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       continue;
     }
     if (event.type === "tool_execution") {
-      const tool = turnForEvent(event, event.time).tools.find((candidate) => candidate.id === event.toolCallId);
+      const tool = findExecutionTool(turnForEvent(event, event.time), event.toolCallId);
       if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
       continue;
     }
@@ -1612,31 +1635,44 @@ function injectedMemorySummaries(value: unknown): string[] | undefined {
 }
 
 /** 后台压缩/记忆请求不属于聊天执行 Trace；重复落盘只保留一次。 */
-function appendModelRequest(turn: TimelineTurn, metrics: TimelineModelRequest): void {
-  if (metrics.requestContext?.operation && metrics.requestContext.operation !== "agent") return;
-  const existing = turn.modelRequests?.find((item) => item.requestId === metrics.requestId);
-  if (existing) { if (!existing.output && metrics.output) existing.output = metrics.output; return; }
-  (turn.modelRequests ??= []).push({ ...metrics });
+function createHistoricalModelRequestAppender(): (turn: TimelineTurn, metrics: TimelineModelRequest) => void {
+  // Keep the index private to this history fold, including incremental appends.
+  const byTurn = new WeakMap<TimelineTurn, Map<string, TimelineModelRequest>>();
+  return (turn, metrics) => {
+    if (metrics.requestContext?.operation && metrics.requestContext.operation !== "agent") return;
+    let requests = byTurn.get(turn);
+    if (!requests) { requests = new Map(); byTurn.set(turn, requests); }
+    const existing = requests.get(metrics.requestId);
+    if (existing) { if (!existing.output && metrics.output) existing.output = metrics.output; return; }
+    const entry = { ...metrics };
+    requests.set(metrics.requestId, entry);
+    (turn.modelRequests ??= []).push(entry);
+  };
 }
 
 /** 终态仍保留实时正文时，把同 run 的已落盘指标附回去；按输入引用缓存，避免逐帧扫描 session。 */
 function attachLiveRequestMetrics(events: SessionEvent[]): (turn: TimelineTurn) => TimelineTurn {
-  const byRun = new Map<string, NonNullable<TimelineTurn["modelRequests"]>>();
+  const byRun = new Map<string, { requests: NonNullable<TimelineTurn["modelRequests"]>; positions: Map<string, number> }>();
   for (const event of events) {
     if (event.type !== "model_request") continue;
     const runId = event.runtime?.runId ?? event.metrics.requestContext?.runId;
     const operation = event.metrics.requestContext?.operation;
     if (!runId || (operation && operation !== "agent")) continue;
-    const list = byRun.get(runId) ?? [];
+    let indexed = byRun.get(runId);
+    if (!indexed) {
+      indexed = { requests: [], positions: new Map() };
+      byRun.set(runId, indexed);
+    }
     const metrics = event.metrics as TimelineModelRequest;
-    const existing = list.findIndex((item) => item.requestId === metrics.requestId);
-    if (existing < 0) list.push(metrics);
-    else if (metrics.output) list[existing] = metrics;
-    byRun.set(runId, list);
+    const existing = indexed.positions.get(metrics.requestId);
+    if (existing === undefined) {
+      indexed.positions.set(metrics.requestId, indexed.requests.length);
+      indexed.requests.push(metrics);
+    } else if (metrics.output) indexed.requests[existing] = metrics;
   }
   const cache = new WeakMap<TimelineTurn, TimelineTurn>();
   return (turn) => {
-    const metrics = byRun.get(turn.id);
+    const metrics = byRun.get(turn.id)?.requests;
     if (!metrics) return turn;
     let result = cache.get(turn);
     if (!result) { result = { ...turn, modelRequests: metrics }; cache.set(turn, result); }

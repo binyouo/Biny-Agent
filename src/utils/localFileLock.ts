@@ -254,6 +254,8 @@ function parseIdentity(value: unknown): FileIdentity | undefined {
 async function safeLockStat(lockPath: string): Promise<Stats | undefined> {
   try {
     const stat = await fs.lstat(lockPath);
+    // 旧 owner 可在内核完成路径查找后 unlink；零链接的普通文件等同于已消失。
+    if (stat.isFile() && stat.nlink === 0) return undefined;
     const reason = stat.isSymbolicLink() ? "symbolic link"
       : !stat.isFile() ? "not a regular file"
       : stat.nlink !== 1 ? "multiple links"
