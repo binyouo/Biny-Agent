@@ -1621,22 +1621,27 @@ function appendModelRequest(turn: TimelineTurn, metrics: TimelineModelRequest): 
 
 /** 终态仍保留实时正文时，把同 run 的已落盘指标附回去；按输入引用缓存，避免逐帧扫描 session。 */
 function attachLiveRequestMetrics(events: SessionEvent[]): (turn: TimelineTurn) => TimelineTurn {
-  const byRun = new Map<string, NonNullable<TimelineTurn["modelRequests"]>>();
+  const byRun = new Map<string, { requests: NonNullable<TimelineTurn["modelRequests"]>; positions: Map<string, number> }>();
   for (const event of events) {
     if (event.type !== "model_request") continue;
     const runId = event.runtime?.runId ?? event.metrics.requestContext?.runId;
     const operation = event.metrics.requestContext?.operation;
     if (!runId || (operation && operation !== "agent")) continue;
-    const list = byRun.get(runId) ?? [];
+    let indexed = byRun.get(runId);
+    if (!indexed) {
+      indexed = { requests: [], positions: new Map() };
+      byRun.set(runId, indexed);
+    }
     const metrics = event.metrics as TimelineModelRequest;
-    const existing = list.findIndex((item) => item.requestId === metrics.requestId);
-    if (existing < 0) list.push(metrics);
-    else if (metrics.output) list[existing] = metrics;
-    byRun.set(runId, list);
+    const existing = indexed.positions.get(metrics.requestId);
+    if (existing === undefined) {
+      indexed.positions.set(metrics.requestId, indexed.requests.length);
+      indexed.requests.push(metrics);
+    } else if (metrics.output) indexed.requests[existing] = metrics;
   }
   const cache = new WeakMap<TimelineTurn, TimelineTurn>();
   return (turn) => {
-    const metrics = byRun.get(turn.id);
+    const metrics = byRun.get(turn.id)?.requests;
     if (!metrics) return turn;
     let result = cache.get(turn);
     if (!result) { result = { ...turn, modelRequests: metrics }; cache.set(turn, result); }
