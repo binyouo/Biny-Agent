@@ -238,7 +238,10 @@ export class StaticPreviewServer {
 }
 
 function inside(root: string, target: string): boolean {
-  return target === root || target.startsWith(`${root}${path.sep}`);
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) return false;
+  // Visible aliases must not bypass the same hidden-file policy as URL paths.
+  // Check relative to the canonical project root, not its possibly hidden parents.
+  return !path.relative(root, target).split(path.sep).some(part => part.startsWith("."));
 }
 
 function singleRange(header: string, size: number): { start: number; end: number } | null {
