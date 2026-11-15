@@ -248,6 +248,73 @@ test("preparation stays silent, retains the original draft and attachments, bloc
   } finally { preparing.resolve(); h.result.resolve(); await h.close(); }
 });
 
+for (const change of ["text", "reference", "prefill", "same-value-prefill", "attachment", "pending-attachment"] as const) {
+  test(`preparation does not consume or send a draft changed by ${change}`, { timeout: 10_000 }, async () => {
+    const h = await fixture();
+    const preparing = deferred();
+    const onPrepare = async () => preparing.promise;
+    await h.render({ onPrepare });
+    try {
+      await h.React.act(async () => h.input().onSubmit());
+      if (change === "prefill" || change === "same-value-prefill") await h.render({ onPrepare,
+        prefillInput: change === "same-value-prefill" ? h.original.draft.value : "替换后的要求" });
+      else await h.React.act(async () => {
+        if (change === "text") h.ref.current!.appendText("补充说明");
+        if (change === "reference") h.ref.current!.appendReference({ kind: "file", label: "new.txt", uri: "biny://file/new.txt" });
+        if (change === "pending-attachment") h.draft.update({ pendingAttachments: [
+          { id: "pending-capture", name: "capture.png", mimeType: "image/png", size: 2, status: "uploading" }] });
+        if (change === "attachment") h.draft.update(current => ({ attachments: [...current.attachments,
+          { name: "capture.png", path: "/synthetic/capture.png", mimeType: "image/png", size: 2 }] }));
+      });
+      const newer = structuredClone(h.draft.getSnapshot());
+      await h.React.act(async () => { preparing.resolve(); await preparing.promise; });
+      assert.equal(h.sends.length, 0, "changed draft needs a fresh explicit submission, not a stale dispatch");
+      assert.deepEqual(h.draft.getSnapshot(), { ...newer, submitting: false });
+      assert.deepEqual(h.warnings, ["准备期间草稿已更新，内容已保留，请重新发送。"]);
+      if (change === "pending-attachment") await h.React.act(async () => h.draft.update({ pendingAttachments: [] }));
+      await h.React.act(async () => h.input().onSubmit());
+      assert.equal(h.sends.length, 1, "cancellation releases the flight lock for an explicit retry");
+      assert.deepEqual(h.sends[0]?.[1], newer.attachments);
+      await h.React.act(async () => { h.result.resolve(); });
+      assert.deepEqual(h.errors, []);
+    } finally { preparing.resolve(); h.result.resolve(); await h.close(); }
+  });
+}
+
+test("changed slash draft is retained instead of executing its stale command", { timeout: 10_000 }, async () => {
+  const h = await fixture();
+  const preparing = deferred();
+  await h.render({ onPrepare: async () => preparing.promise, prefillInput: "/goal show" });
+  try {
+    await h.React.act(async () => h.input().onSubmit());
+    await h.React.act(async () => h.ref.current!.appendText("新增要求"));
+    const newer = structuredClone(h.draft.getSnapshot());
+    await h.React.act(async () => { preparing.resolve(); await preparing.promise; });
+    assert.deepEqual(h.commands, []);
+    assert.deepEqual(h.sends, []);
+    assert.deepEqual(h.draft.getSnapshot(), { ...newer, submitting: false });
+    assert.deepEqual(h.warnings, ["准备期间草稿已更新，内容已保留，请重新发送。"]);
+  } finally { preparing.resolve(); h.result.resolve(); await h.close(); }
+});
+
+test("a suggestion can finish preparing without consuming a changed unrelated draft", { timeout: 10_000 }, async () => {
+  const h = await fixture();
+  const preparing = deferred();
+  await h.render({ onPrepare: async () => preparing.promise });
+  try {
+    let submitted!: Promise<void>;
+    await h.React.act(async () => { submitted = h.ref.current!.submitSuggestion("整理近期工作"); });
+    await h.React.act(async () => h.ref.current!.appendText("新增要求"));
+    const newer = structuredClone(h.draft.getSnapshot());
+    await h.React.act(async () => { preparing.resolve(); await preparing.promise; });
+    assert.equal(h.sends.length, 1);
+    assert.equal(h.sends[0]?.[0], "整理近期工作");
+    await h.React.act(async () => { h.result.resolve(); await submitted; });
+    assert.deepEqual(h.draft.getSnapshot(), { ...newer, submitting: false });
+    assert.deepEqual(h.warnings, []);
+  } finally { preparing.resolve(); h.result.resolve(); await h.close(); }
+});
+
 for (const outcome of ["failure", "navigation", "unmount"] as const) {
   test(`preparation ${outcome} preserves the draft and never dispatches`, { timeout: 10_000 }, async () => {
     const h = await fixture();
@@ -256,6 +323,10 @@ for (const outcome of ["failure", "navigation", "unmount"] as const) {
     await h.render({ onPrepare: async () => preparing.promise, isSubmissionCurrent: () => current });
     try {
       await h.React.act(async () => { h.input().onSubmit(); });
+      await h.React.act(async () => h.ref.current!.appendReference({ kind: "file", label: "new.txt", uri: "biny://file/new.txt" }));
+      await h.React.act(async () => h.draft.update(current => ({ attachments: [...current.attachments,
+        { name: "capture.png", path: "/synthetic/capture.png", mimeType: "image/png", size: 2 }] })));
+      const newer = structuredClone(h.draft.getSnapshot());
       if (outcome === "navigation") current = false;
       if (outcome === "unmount") await h.render({ draftKey: "another-chat" });
       await h.React.act(async () => {
@@ -263,8 +334,9 @@ for (const outcome of ["failure", "navigation", "unmount"] as const) {
         await preparing.promise.catch(() => undefined);
       });
       assert.equal(h.sends.length, 0);
-      assert.deepEqual(h.draft.getSnapshot().draft, h.original.draft);
-      assert.deepEqual(h.draft.getSnapshot().attachments, h.original.attachments);
+      assert.deepEqual(h.draft.getSnapshot(), { ...newer, submitting: false });
+      assert.deepEqual(h.warnings, []);
+      if (outcome === "unmount") assert.equal(h.props.drafts.get("another-chat")!.getSnapshot().draft.value, "");
       assert.deepEqual(h.errors, outcome === "failure" ? ["preparation failed"] : []);
     } finally { preparing.resolve(); h.result.resolve(); await h.close(); }
   });

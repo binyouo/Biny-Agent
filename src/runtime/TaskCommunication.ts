@@ -1,3 +1,4 @@
+import { parseFileChange, type CommittedFileChange } from "../tools/file/fileChange.js";
 import { pendingTaskVerificationApproval } from "./taskVerification.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -24,6 +25,8 @@ export interface WorkerActivity {
   status?: string;
   args?: unknown;
   result?: unknown;
+  change?: CommittedFileChange;
+  operationId?: string;
 }
 
 export interface TaskInspectionOptions {
@@ -328,8 +331,9 @@ function workerActivity(event: RuntimeEvent): WorkerActivity[] {
       ? [{ ...base, kind: "model", model: { provider: provider.slice(0, 256), id: id.slice(0, 256) } }] : [];
   }
   if (event.eventType === "session.tool_call" && tool) return [{ ...base, kind: "tool_call", tool, toolCallId, args: boundedValue(value.args), content: text(value.assistantContent) }];
-  if (event.eventType === "session.tool_result" && tool) return [{ ...base, kind: "tool_result", tool, toolCallId, result: boundedValue(value.result), status: text(value.executionStatus) }];
-  if (event.eventType === "session.tool_execution" && tool) return [{ ...base, kind: "tool_execution", tool, toolCallId, status: text(value.state), content: text(value.evidence) }];
+  if (event.eventType === "session.tool_result" && tool) return [{ ...base, kind: "tool_result", tool, toolCallId, result: boundedValue(value.result), status: text(value.executionStatus), operationId: text(value.operationId) }];
+  if (event.eventType === "session.tool_execution" && tool) return [{ ...base, kind: "tool_execution", tool, toolCallId, status: text(value.state), content: text(value.evidence),
+    change: parseFileChange(boundedValue(value.change)), operationId: text(value.operationId) }];
   if (event.eventType === "session.turn_status") return [{ ...base, kind: "completion", status: text(value.status), content: text(value.summary) }];
   if (event.eventType !== "session.agent_message") return [];
   const message = value.message as { role?: unknown; content?: unknown } | undefined;

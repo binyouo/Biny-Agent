@@ -446,10 +446,10 @@ export class DesktopSettingsTransaction {
     }
     if (options.preferencesCommitted) {
       try {
-        const current = this.state.settingsPreferences();
+        // Only compensate our committed version, never a later successful preference edit.
         const restored = await this.state.restoreSettingsPreferences(
           options.journal.segments.preferences.before,
-          current.revision
+          options.journal.segments.preferences.after.revision
         );
         options.journal.segments.preferences.state = "rolled_back";
         options.journal.segments.preferences.rollback = restored;
