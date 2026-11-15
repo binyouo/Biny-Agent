@@ -798,6 +798,8 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
   const turns = new Map<string, TimelineTurn>();
   const order: string[] = [];
   const toolMaps = new Map<string, Map<string, TimelineTool>>();
+  // Counts belong to this fold, including retry notices and removal of empty assistant steps.
+  const stepCounts = new Map<string, { reasoning: number; assistant: number }>();
   const activeReasoning = new Map<string, TimelineReasoningStep>();
   const activeAssistant = new Map<string, TimelineAssistantStep>();
   let userMessageIndex = initialUserMessageIndex;
@@ -815,6 +817,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     const turn = emptyTurn(event.runId, event.timestamp);
     turns.set(event.runId, turn);
     toolMaps.set(event.runId, new Map());
+    stepCounts.set(event.runId, { reasoning: 0, assistant: 0 });
     order.push(event.runId);
     return turn;
   };
@@ -880,7 +883,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     const status = event.phase === "initial" ? "正在分析任务" : "正在继续处理";
     const step: TimelineReasoningStep = {
       kind: "reasoning",
-      id: `${event.runId}:reasoning:${String(turn.steps.filter((candidate) => candidate.kind === "reasoning").length)}`,
+      id: `${event.runId}:reasoning:${String(stepCounts.get(turn.id)!.reasoning++)}`,
       content: "",
       status,
       startedAt: event.timestamp
@@ -908,7 +911,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     }
     const step: TimelineAssistantStep = {
       kind: "assistant",
-      id: `${turn.id}:assistant:${String(turn.steps.filter((candidate) => candidate.kind === "assistant").length)}`,
+      id: `${turn.id}:assistant:${String(stepCounts.get(turn.id)!.assistant++)}`,
       content
     };
     turn.steps.push(step);
@@ -922,7 +925,10 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     const content = redactSecrets(publicAssistantMessage(step.content)).trimEnd();
     const index = turn.steps.indexOf(step);
     if (!content) {
-      if (index >= 0) turn.steps.splice(index, 1);
+      if (index >= 0) {
+        turn.steps.splice(index, 1);
+        stepCounts.get(turn.id)!.assistant--;
+      }
     } else {
       step.content = content;
       step.summary = true;
@@ -974,6 +980,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       if (event.context.capabilitySelection) turn.capabilitySelection = event.context.capabilitySelection;
       if (event.context.loadedSkills !== undefined) turn.skills = [...new Set([...turn.skills, ...loadedSkillNamesFromValue(event.context.loadedSkills)])];
     } else if (event.type === "context.retrying") {
+      stepCounts.get(turn.id)!.reasoning++;
       turn.steps.push({
         kind: "reasoning",
         id: `${event.runId}:context-retry:${String(event.attempt)}`,
