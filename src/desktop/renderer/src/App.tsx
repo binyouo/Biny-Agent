@@ -182,6 +182,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [temporalSourceTarget, setTemporalSourceTarget] = useState<{ sessionId: string; messageId: string }>();
   const [messageReferencesTarget, setMessageReferencesTarget] = useState<{ projectId: string; uri: string }>();
   const messageReferencesRequestRef = useRef(0);
+  const referenceOpenRequestRef = useRef(0);
+  useEffect(() => () => { referenceOpenRequestRef.current += 1; }, []);
   const [dateReferenceUri, setDateReferenceUri] = useState<string>();
   const [settingsCloseRequest, setSettingsCloseRequest] = useState<DesktopSettingsCloseRequest>();
   const browserSelectionPending = useRef<string | undefined>(undefined);
@@ -1322,10 +1324,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     if (!projectId || !sessionId || resumeFlightRef.current) return;
+    const request = loadRequestRef.current;
+    const isCurrent = (): boolean => loadRequestRef.current === request
+      && projectRef.current === projectId && selectedRef.current === sessionId;
     resumeFlightRef.current = true;
     try {
       const receipt = await window.biny.resumeInterruptedTurn(projectId, sessionId);
-      if (projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+      if (!isCurrent()) return;
       if (receipt) {
         setGenerationError(undefined);
         setDocument((current) => current?.session.id === sessionId ? { ...current, recovery: undefined } : current);
@@ -1333,7 +1338,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         await openSession(projectId, sessionId, false);
       }
     } catch (error) {
-      if (projectRef.current === projectId && selectedRef.current === sessionId) {
+      if (isCurrent()) {
         await refreshRuntimeFailure(projectId, sessionId).catch(() => undefined);
       }
       throw error;
@@ -2122,6 +2127,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   }, []);
   // 深链路由：MarkdownContent 叶子渲染直接调用 hub，这里统一解析并导航。
   const openDeepLink = useCallback(async (url: string, requestedProjectId?: string): Promise<void> => {
+    const referenceRequest = ++referenceOpenRequestRef.current;
     if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|agent|mcp|model|provider|tool|tool-call|task|cron|plan)\//u.test(url)) {
       const projectId = requestedProjectId ?? workspace?.project.id;
       if (!projectId) return;
@@ -2141,9 +2147,18 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         }
         return;
       }
+      const projectLifetime = projectRemovalRef.current.get(projectId);
+      const selection = requestedProjectId ? selectProject(projectId) : undefined;
+      const navigationRequest = loadRequestRef.current;
+      const isCurrent = (): boolean => referenceOpenRequestRef.current === referenceRequest
+        && projectRef.current === projectId
+        && loadRequestRef.current === navigationRequest
+        && projectRemovalRef.current.get(projectId) === projectLifetime;
       try {
-        if (requestedProjectId && requestedProjectId !== workspace?.project.id) await selectProject(requestedProjectId);
+        await selection;
+        if (!isCurrent()) return;
         const reference = await window.biny.referenceResolve(projectId, url);
+        if (!isCurrent()) return;
         if ((reference.kind === "message" || reference.kind === "snippet") && reference.threadId && reference.messageId) {
           setTemporalSourceTarget({ sessionId: reference.threadId, messageId: reference.messageId });
           await navigateToSession(projectId, reference.threadId);
@@ -2156,7 +2171,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
         else if (reference.kind === "mcp") openSettings("MCP 服务器");
         else if (reference.kind === "model" || reference.kind === "provider") openSettings("模型");
         else inspector.previewReference(reference);
-      } catch (error) { setWarning(errorMessage(error)); }
+      } catch (error) { if (isCurrent()) setWarning(errorMessage(error)); }
       return;
     }
     const link = parseBinyDeepLink(url);
