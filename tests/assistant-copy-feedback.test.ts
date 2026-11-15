@@ -259,3 +259,47 @@ test("用户复制失败保留可重试入口，不把失败显示成成功", as
     assert.ok(h.button("已复制"));
   } finally { await h.close(); }
 });
+
+for (const owner of ["user", "assistant"] as const) {
+  for (const sink of ["modern", "fallback", "rejected-modern"] as const) {
+    for (const [name, raw] of [
+      ["JSON string", '```json\n{"label":"10\u00a0kg"}\n```\n'],
+      ["mixed literal whitespace", '# Raw\r\n\r\n```txt\r\n\t中文😀\u00a0\u00a0value\u202f\r\n```\r\n'],
+      ["escaped NBSP and ASCII", '```json\n{"label":"10\\u00a0kg", "ascii":"a b"}\n```\n']
+    ] as const) {
+      test(`${owner} Markdown copy preserves ${name} through ${sink}`, async () => {
+        const modern: string[] = [], fallback: string[] = [];
+        const h = await harness(async text => {
+          modern.push(text);
+          if (sink === "rejected-modern") throw new Error("synthetic clipboard rejection");
+        }, () => { fallback.push((document.activeElement as HTMLTextAreaElement).value); return true; });
+        try {
+          if (sink === "fallback") Object.defineProperty(h.dom.window.navigator, "clipboard", { configurable: true, value: undefined });
+          await h.render({ turns: [{ ...h.turn, userMessageId: "user", user: owner === "user" ? raw : "", assistant: owner === "assistant" ? raw : "" }] });
+          await h.click(owner === "user" ? "更多消息操作" : "更多回复操作");
+          await h.click("复制为 Markdown");
+          assert.deepEqual(modern, sink === "fallback" ? [] : [raw]);
+          // The native textarea value contract normalizes CRLF to LF; NBSP must still survive.
+          assert.deepEqual(fallback, sink === "modern" ? [] : [raw.replace(/\r\n/g, "\n")]);
+          assert.equal(h.dom.window.document.querySelectorAll("textarea").length, 0, "fallback leaves no copied source in hidden DOM");
+        } finally { await h.close(); }
+      });
+    }
+    test(`${owner} plain-text copy retains its presentation-space policy through ${sink}`, async () => {
+      const modern: string[] = [], fallback: string[] = [];
+      const h = await harness(async text => {
+        modern.push(text);
+        if (sink === "rejected-modern") throw new Error("synthetic clipboard rejection");
+      }, () => { fallback.push((document.activeElement as HTMLTextAreaElement).value); return true; });
+      try {
+        if (sink === "fallback") Object.defineProperty(h.dom.window.navigator, "clipboard", { configurable: true, value: undefined });
+        const raw = "**10\u00a0kg**";
+        await h.render({ turns: [{ ...h.turn, userMessageId: "user", user: owner === "user" ? raw : "", assistant: owner === "assistant" ? raw : "" }] });
+        await h.click(owner === "user" ? "更多消息操作" : "更多回复操作");
+        await h.click("复制为纯文本");
+        assert.deepEqual(modern, sink === "fallback" ? [] : ["10 kg"]);
+        assert.deepEqual(fallback, sink === "modern" ? [] : ["10 kg"]);
+      } finally { await h.close(); }
+    });
+  }
+}

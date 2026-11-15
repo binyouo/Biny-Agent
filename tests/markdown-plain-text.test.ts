@@ -63,6 +63,6 @@ test("all existing consumers use the complete local transform wrapper", () => {
   const wrapper = vm.runInNewContext(`${compiled}\nplainTextFromMarkdown`, { markdownPlainText }, { timeout: 1_000 }) as (content: string) => string;
   for (const [, input, expected] of cases) assert.equal(wrapper(input), expected);
   assert.match(source, /copyText\(plainTextFromMarkdown\(message\.text\)\)/u);
-  assert.match(source, /copyToClipboard\(kind === "markdown" \? content : plainTextFromMarkdown\(content\)\)/u);
+  assert.match(source, /copyToClipboard\(kind === "markdown" \? content : plainTextFromMarkdown\(content\), \{ preserveNonBreakingSpaces: kind === "markdown" \}\)/u);
   assert.match(source, /speak\(plainTextFromMarkdown\(content\),/u);
 });

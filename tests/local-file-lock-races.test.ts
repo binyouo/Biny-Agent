@@ -167,6 +167,33 @@ if (process.argv[2] === workerFlag) {
   assert.ok(root && name && lockName && pauseAt);
   await worker(root, name, lockName, pauseAt);
 } else {
+  await test("an unlinked marker observed by path stat retries acquisition", async (t) => {
+    await fixture(async (root) => {
+      const lockPath = path.join(root, "state.lock");
+      await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, nonce: "legacy-owner" }), { mode: 0o600 });
+      const lstat = fs.lstat.bind(fs);
+      let unlinkDuringStat = true;
+      t.mock.method(fs, "lstat", async (...args: Parameters<typeof fs.lstat>) => {
+        if (args[0] !== lockPath || !unlinkDuringStat) return lstat(...args);
+        unlinkDuringStat = false;
+        // 模拟路径查找已取得 inode、读取属性前旧 owner 删除文件的窗口。
+        const marker = await fs.open(lockPath, "r");
+        try {
+          await fs.unlink(lockPath);
+          const detached = await marker.stat();
+          assert.equal(detached.nlink, 0);
+          return detached;
+        } finally {
+          await marker.close();
+        }
+      });
+      let entered = false;
+      await withLocalFileWriteLock(root, "state.lock", async () => { entered = true; });
+      assert.equal(entered, true);
+      assert.equal(existsSync(lockPath), false);
+    });
+  });
+
   await test("final stale-owner stat and unlink cannot admit two cross-process operations", async () => {
     await fixture(async (root, workers) => {
       await fs.writeFile(path.join(root, "state.lock"), JSON.stringify({ pid: 2147483647, nonce: "dead" }), { mode: 0o600 });
