@@ -18,6 +18,7 @@ import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { connectRuntimeHost, RuntimeHostClient, startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { ensureRuntimeHostDirectory, runtimeHostPaths, writeRegistration } from "../src/runtime/host/lifecycle.js";
 import { executeRuntimeCommand } from "../src/runtime/commands.js";
+import { forkSession } from "../src/session/fork.js";
 import { SessionLeaseStore } from "../src/runtime/SessionLease.js";
 import { isTerminalRunEvent, pendingPermission, type AgentHostEvent } from "../src/runtime/agentEvents.js";
 import type { RuntimeHostFactoryOptions } from "../src/runtime/host/types.js";
@@ -58,14 +59,6 @@ import {
   replaceProjectSessions,
   updateRuntimeInfo
 } from "../src/desktop/renderer/src/app/desktopState.js";
-import {
-  canNavigateBack,
-  canNavigateForward,
-  createNavigationState,
-  moveNavigation,
-  pushNavigation,
-  replaceNavigation
-} from "../src/desktop/renderer/src/navigationHistory.js";
 import { buildSessionTimeline, listChangedFiles, liveTimelineEvents } from "../src/desktop/renderer/src/sessionTimeline.js";
 import { formatContextUsage, formatUsageCost } from "../src/desktop/renderer/src/usagePresentation.js";
 import { reasoningDetailText } from "../src/desktop/renderer/src/reasoningPresentation.js";
@@ -108,7 +101,7 @@ await testDesktopOpenSessionReturnsHistoryWhenRuntimeFails();
 await testDesktopOpenSessionReturnsWriterConflictReadOnlyDocument();
 await testDesktopOpenSessionReturnsConsistentMetadataSnapshot();
 await testDesktopRuntimeInitializationIsShared();
-await testDesktopMessageEditFork();
+await testDesktopSessionForks();
 await testDesktopPromptIdempotency();
 await testDesktopClearsTerminalLiveEvents();
 await testWorkspaceFilePreview();
@@ -182,7 +175,6 @@ testLiveBlockedAndCancelledProjection();
 testTerminalRunEventClassification();
 testLiveReasoningAndSkillProjection();
 testReasoningDetailDoesNotUseCompletionStatusAsContent();
-testDesktopNavigationHistory();
 testDesktopRendererStateProjection();
 testDesktopRendererSidebarProjection();
 testDesktopRendererRootRefreshDropsDeletedSession();
@@ -791,7 +783,7 @@ async function testDesktopRestoresPersistedTerminalStatus(): Promise<void> {
   }
 }
 
-async function testDesktopMessageEditFork(): Promise<void> {
+async function testDesktopSessionForks(): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-edit-fork-workspace-"));
   const desktopRoot = await mkdtemp(path.join(os.tmpdir(), "biny-edit-fork-data-"));
   try {
@@ -818,7 +810,7 @@ async function testDesktopMessageEditFork(): Promise<void> {
     const reopenedAuthority = await RuntimeEventAuthority.open(dataRoot);
     reopenedAuthority.close();
 
-    const forkedSessionId = await projects.forkSessionAtUserMessage(project, "source-session", 1);
+    const { sessionId: forkedSessionId } = await forkSession(dataRoot, "source-session", { upToEvent: 4 });
     const forked = await readStoredSessionEvents(dataRoot, forkedSessionId);
     assert.deepEqual(forked.events.filter((event) => event.type === "user_message" && !event.auditOnly).map((event) => event.content), ["第一条"]);
     assert.equal(forked.events.some((event) => event.type === "user_message" && event.content === "旧的第二条"), false);
@@ -4316,27 +4308,6 @@ function testReasoningDetailDoesNotUseCompletionStatusAsContent(): void {
   // 模型没回传思考内容时返回空串，由展示层折叠成纯状态行，不渲染占位句。
   assert.equal(reasoningDetailText({ content: "" }), "");
   assert.equal(reasoningDetailText({ content: "   " }), "");
-}
-
-function testDesktopNavigationHistory(): void {
-  const first = { projectId: "project", sessionId: "first" };
-  const second = { projectId: "project", sessionId: "second" };
-  const draft = { projectId: "project", sessionId: undefined };
-  let state = createNavigationState();
-  state = pushNavigation(state, first);
-  state = pushNavigation(state, second);
-  assert.equal(canNavigateBack(state), true);
-  assert.equal(canNavigateForward(state), false);
-
-  const back = moveNavigation(state, -1);
-  assert.deepEqual(back.target, first);
-  state = back.state;
-  state = pushNavigation(state, draft);
-  assert.equal(canNavigateForward(state), false);
-  assert.deepEqual(state.entries, [first, draft]);
-  state = replaceNavigation(state, second);
-  assert.deepEqual(state.entries, [first, second]);
-  assert.deepEqual(moveNavigation(state, 1).target, undefined);
 }
 
 function fakeCommandRuntime(requireFullYes = false, statusGate?: Promise<void>): CommandRuntime {

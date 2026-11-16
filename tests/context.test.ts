@@ -30,15 +30,15 @@ import { maxSessionEventLineBytes, maxSessionEvents, maxSessionFileBytes } from 
 import { replaySession, sessionEventsToConversation } from "../src/session/replay.js";
 import {
   deleteSessionFile,
-  duplicateSessionFile,
+  createSessionFile,
   agentDir,
   ensureAgentDirs,
   listSessionFiles,
-  readSessionSnapshot,
   resolveSessionFile,
   sessionFilePath
 } from "../src/session/store.js";
-import { listSessionSummaries, parseSessionEvents, readSessionEvents, readStoredSessionEvents, repairSessionTailForAppend } from "../src/session/events.js";
+import { forkSession } from "../src/session/fork.js";
+import { listSessionSummaries, parseSessionEvents, readSessionEvents, readStoredSessionEvents } from "../src/session/events.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { createCheckpointEvidenceTool } from "../src/extensions/checkpointEvidence.js";
 import { checkpointClaims } from "../src/session/checkpointClaims.js";
@@ -1180,8 +1180,8 @@ async function testTruncatedSessionTailAndDanglingToolRecovery(): Promise<void> 
     assert.equal(replay.recoveredToolResults[0]?.toolCallId, "dangling-1");
     assert.equal(replay.messages.some((message) => message.role === "toolResult"), true);
 
-    await repairSessionTailForAppend(filePath);
     const recorder = new SessionRecorder(workspaceRoot, "interrupted-session");
+    recorder.repairTailForAppend();
     for (const event of replay.recoveredToolResults) recorder.record(event);
     await recorder.close();
     const repaired = await readSessionEvents(filePath);
@@ -1501,11 +1501,11 @@ async function testSessionPathBoundaries(): Promise<void> {
     assert.equal(await resolveSessionFile(workspaceRoot, "2026-07-18-safe.jsonl"), canonicalSafeFile);
     await assert.rejects(resolveSessionFile(workspaceRoot, ".biny/sessions/2026-07-18-safe.jsonl"), /Invalid session reference/u);
     assert.equal(await resolveSessionFile(workspaceRoot, "latest"), canonicalSafeFile);
-    assert.match((await readSessionSnapshot(workspaceRoot, "2026-07-18-safe")).bytes.toString("utf8"), /safe session/);
+    assert.match(JSON.stringify((await readStoredSessionEvents(workspaceRoot, "2026-07-18-safe")).events), /safe session/);
     assert.equal((await readStoredSessionEvents(workspaceRoot, "2026-07-18-safe")).events[0]?.type, "user_message");
-    const duplicatePath = await duplicateSessionFile(workspaceRoot, "2026-07-18-safe", "safe-copy");
+    const { filePath: duplicatePath, sessionId: duplicateId } = await forkSession(workspaceRoot, "2026-07-18-safe");
     assert.equal(await fs.readFile(duplicatePath, "utf8"), await fs.readFile(safeFile, "utf8"));
-    await deleteSessionFile(workspaceRoot, "safe-copy");
+    await deleteSessionFile(workspaceRoot, duplicateId);
     await assert.rejects(fs.access(duplicatePath));
     const deleteTombstones = (await fs.readdir(path.dirname(duplicatePath)))
       .filter((fileName) => fileName.startsWith(".session-delete-") && fileName.endsWith(".delete"));
@@ -1533,23 +1533,22 @@ async function testSessionPathBoundaries(): Promise<void> {
       await fs.writeFile(outsideFile, outsideContent, "utf8");
       await fs.symlink(outsideFile, path.join(sessionsDir, "linked.jsonl"));
       await assert.rejects(resolveSessionFile(workspaceRoot, "linked"), /regular \.jsonl file/);
-      await assert.rejects(readSessionSnapshot(workspaceRoot, "linked"), /regular \.jsonl file/);
-      await assert.rejects(duplicateSessionFile(workspaceRoot, "linked", "linked-copy"), /regular \.jsonl file/);
+      await assert.rejects(readStoredSessionEvents(workspaceRoot, "linked"), /regular \.jsonl file/);
+      await assert.rejects(forkSession(workspaceRoot, "linked"), /regular \.jsonl file/);
       await assert.rejects(deleteSessionFile(workspaceRoot, "linked"), /regular \.jsonl file/);
 
       const hardlinkedFile = path.join(sessionsDir, "hardlinked.jsonl");
       await fs.link(outsideFile, hardlinkedFile);
       await assert.rejects(resolveSessionFile(workspaceRoot, "hardlinked"), /single-link regular \.jsonl file/);
-      await assert.rejects(readSessionSnapshot(workspaceRoot, "hardlinked"), /single-link regular \.jsonl file/);
-      await assert.rejects(duplicateSessionFile(workspaceRoot, "2026-07-18-safe", "hardlinked"), /EEXIST/);
+      await assert.rejects(readStoredSessionEvents(workspaceRoot, "hardlinked"), /single-link regular \.jsonl file/);
+      await assert.rejects(createSessionFile(workspaceRoot, "hardlinked", Buffer.from("must not overwrite")), /EEXIST/);
       await assert.rejects(deleteSessionFile(workspaceRoot, "hardlinked"), /single-link regular \.jsonl file/);
-      await assert.rejects(repairSessionTailForAppend(hardlinkedFile), /single-link regular \.jsonl file/);
       assert.throws(() => new SessionRecorder(workspaceRoot, "hardlinked"), /single-link regular \.jsonl file/);
       assert.equal(await fs.readFile(outsideFile, "utf8"), outsideContent);
 
       const workspaceAlias = path.join(outsideRoot, "workspace-alias");
       await fs.symlink(workspaceRoot, workspaceAlias);
-      assert.match((await readSessionSnapshot(workspaceAlias, "2026-07-18-safe")).bytes.toString("utf8"), /safe session/);
+      assert.match(JSON.stringify((await readStoredSessionEvents(workspaceAlias, "2026-07-18-safe")).events), /safe session/);
 
       const pinnedRecorder = new SessionRecorder(workspaceRoot, "pinned-before-parent-swap");
       const originalSessionsRoot = `${sessionsRoot}-original`;
@@ -1585,8 +1584,8 @@ async function testSessionPathBoundaries(): Promise<void> {
       await removeTestRoot(outsideSessionsDir, { recursive: true, force: true });
       await fs.symlink(outsideRoot, outsideSessionsDir);
       await assert.rejects(resolveSessionFile(workspaceRoot, "outside"), /real directory, not a symbolic link/);
-      await assert.rejects(readSessionSnapshot(workspaceRoot, "outside"), /real directory, not a symbolic link/);
-      await assert.rejects(duplicateSessionFile(workspaceRoot, "outside", "must-not-copy"), /real directory, not a symbolic link/);
+      await assert.rejects(readStoredSessionEvents(workspaceRoot, "outside"), /real directory, not a symbolic link/);
+      await assert.rejects(forkSession(workspaceRoot, "outside"), /real directory, not a symbolic link/);
       await assert.rejects(deleteSessionFile(workspaceRoot, "outside"), /real directory, not a symbolic link/);
       await assert.rejects(ensureAgentDirs(workspaceRoot), /real directory, not a symbolic link/);
       assert.throws(() => new SessionRecorder(workspaceRoot, "must-not-escape"), /real directory, not a symbolic link/);
@@ -1617,8 +1616,8 @@ async function testGlobalSessionsStayProjectScoped(): Promise<void> {
         fs.writeFile(firstPath, `${JSON.stringify({ type: "user_message", content: "first project" })}\n`, "utf8"),
         fs.writeFile(secondPath, `${JSON.stringify({ type: "user_message", content: "second project" })}\n`, "utf8")
       ]);
-      assert.match((await readSessionSnapshot(workspaceRoot, "latest")).bytes.toString("utf8"), /first project/u);
-      assert.match((await readSessionSnapshot(otherWorkspace, "latest")).bytes.toString("utf8"), /second project/u);
+      assert.match(JSON.stringify((await readStoredSessionEvents(workspaceRoot, "latest")).events), /first project/u);
+      assert.match(JSON.stringify((await readStoredSessionEvents(otherWorkspace, "latest")).events), /second project/u);
     } finally {
       await rm(otherWorkspace, { recursive: true, force: true });
     }
@@ -1636,11 +1635,10 @@ async function testSessionReadLimits(): Promise<void> {
 
     // 校验与写入路径保持严格：这些地方发现超限就该停下。
     await assert.rejects(readSessionEvents(oversizedFile), /maximum size/u);
-    await assert.rejects(repairSessionTailForAppend(oversizedFile), /maximum size/u);
-    // 原始快照供文件复制使用，不能把残缺尾部当成完整源文件。
-    await assert.rejects(readSessionSnapshot(workspaceRoot, "oversized-session"), /maximum size/u);
-    await assert.rejects(duplicateSessionFile(workspaceRoot, "oversized-session", "oversized-copy"), /maximum size/u);
+    await assert.rejects(readStoredSessionEvents(workspaceRoot, "oversized-session"), /maximum size/u);
+    await assert.rejects(forkSession(workspaceRoot, "oversized-session"), /maximum size/u);
     const oversizedRecorder = new SessionRecorder(workspaceRoot, "oversized-session");
+    assert.throws(() => oversizedRecorder.repairTailForAppend(), /maximum size/u);
     assert.throws(() => oversizedRecorder.readText(), /maximum size/u);
     await oversizedRecorder.close();
 
