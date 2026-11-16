@@ -87,7 +87,7 @@ function fixture() {
   Object.assign(c,{context:{toolRegistry:registry,config,workspaceRoot:'/inert',recorder:{sessionId:'inert'}},
     permissionManager:{evaluate:()=>({decision:'allow'}),applyResult:()=>{},revokeResult:()=>{},getDeniedPaths:()=>[]},
     allowedToolNames:undefined,executionToolNames:undefined,
-    duplicateToolCallIds:new Set(),scriptParents:new Map(),toolImages:new Map(),imageBytes:0,
+    scriptParents:new Map(),toolImages:new Map(),imageBytes:0,
     codeModeToolChecks:new WeakMap(),pendingExecutions:new Map(),quarantinedCodeModeChildIds:new Set(),uncertainExecutions:new Map(),permissionTail:Promise.resolve(),
     getStepContext:()=>({}),nextSequence:()=>audit.length+1,recordAndFlush:async (e: any)=>{audit.push(e);return e;},emit:()=>{},
     assertCanContinue:()=>{},buildPermissionSnapshot:async (call: any)=>({request:{tool:call.name,toolCallId:call.id}}),

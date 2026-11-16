@@ -300,8 +300,16 @@ function streamModelStep(state: VercelLoopState) {
         try {
           const result = await doStream();
           let terminal = false;
+          const toolCallIds = new Set<string>();
           return { ...result, stream: result.stream.pipeThrough(new TransformStream({
             transform(part, controller) {
+              // SDK 在模型步骤完成后派发工具；在流边界拒绝重复身份，阻止整批副作用。
+              if (part.type === "tool-call") {
+                if (toolCallIds.has(part.toolCallId)) {
+                  throw new Error(`Duplicate tool call id received from the model: ${part.toolCallId}. The turn was stopped before tool execution.`);
+                }
+                toolCallIds.add(part.toolCallId);
+              }
               if (part.type === "finish" || part.type === "error") terminal = true;
               controller.enqueue(part);
             },
