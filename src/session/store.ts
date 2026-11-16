@@ -39,6 +39,11 @@ interface SessionFileEntry {
   filePath: string;
 }
 
+/** Only resolution-confirmed absence, never an I/O or identity-check failure. */
+export class SessionNotFoundError extends Error {
+  override readonly name = "SessionNotFoundError";
+}
+
 export interface SessionDeleteHooks {
   beforeTombstoneMove?(paths: { filePath: string; tombstonePath: string }): Promise<void>;
   afterTombstoneVerified?(paths: { filePath: string; tombstonePath: string }): Promise<void>;
@@ -253,7 +258,7 @@ async function resolveSessionFileAt(location: SessionStorageLocation, session: s
   if (explicitFileName) {
     const filePath = await findSessionFileByName(location, explicitFileName);
     if (filePath) return filePath;
-    throw new Error(`Session file not found: ${explicitFileName}`);
+    throw new SessionNotFoundError(`Session file not found: ${explicitFileName}`);
   }
 
   if (session.includes("\0") || session.includes("/") || session.includes("\\") || session === "." || session === "..") {
@@ -268,7 +273,7 @@ async function resolveSessionFileAt(location: SessionStorageLocation, session: s
   // 支持用 session id 前缀恢复，减少复制完整文件名的成本；如果前缀不唯一就明确报错。
   if (prefixMatches.length === 1) {
     const match = prefixMatches[0];
-    if (!match) throw new Error(`Session not found: ${session}`);
+    if (!match) throw new SessionNotFoundError(`Session not found: ${session}`);
     return match.filePath;
   }
 
@@ -276,7 +281,7 @@ async function resolveSessionFileAt(location: SessionStorageLocation, session: s
     throw new Error(`Session id is ambiguous: ${session}\nMatches:\n${prefixMatches.map((match) => match.fileName).join("\n")}`);
   }
 
-  throw new Error(`Session not found: ${session}\nUse "biny sessions" to list sessions, or "biny resume latest" for the latest session.`);
+  throw new SessionNotFoundError(`Session not found: ${session}\nUse "biny sessions" to list sessions, or "biny resume latest" for the latest session.`);
 }
 
 async function latestSessionFile(location: SessionStorageLocation): Promise<string> {
