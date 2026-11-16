@@ -41,7 +41,7 @@ export function MarkdownCodeBlock({ code, language, dashed, isStreaming = false 
       const delta = rect.top - viewport.top;
       const next = rect.height > viewport.height && delta < (isSticky ? 4 : -12) && rect.bottom > viewport.top + 50;
       isSticky = next;
-      const copyRect = toolbar.current?.querySelector("button")?.getBoundingClientRect();
+      const copyRect = next ? toolbar.current?.querySelector("button")?.getBoundingClientRect() : undefined;
       setSticky(previous => {
         if (!next || !copyRect) return undefined;
         const position = { top: Math.round(viewport.top + 12), right: Math.round(window.innerWidth - copyRect.right), unit: `${copyRect.width / 1.5}px` };
