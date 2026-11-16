@@ -200,6 +200,16 @@ test("catalog provenance survives version-2 file persistence without dropping le
     assert.deepEqual(await restoreProviderCatalogs([alias], reopened, { [alias]: second }), []);
     assert.equal((await reopened.read("legacy"))?.models[0]?.contextWindow, 200_000);
     assert.equal((JSON.parse(await readFile(file, "utf8")) as { version: number }).version, 2);
+    const persisted = await readFile(file, "utf8");
+    const single = (await reopened.read("legacy"))!;
+    const batch = (await reopened.readMany(["legacy"])).get("legacy")!;
+    single.models[0]!.contextWindow = 123;
+    batch.models[0]!.capabilities.tools = false;
+    assert.equal(batch.models[0]!.contextWindow, 200_000);
+    assert.equal(single.models[0]!.capabilities.tools, true);
+    assert.equal((await reopened.read("legacy"))?.models[0]?.contextWindow, 200_000);
+    assert.equal((await reopened.readMany(["legacy"])).get("legacy")?.models[0]?.capabilities.tools, true);
+    assert.equal(await readFile(file, "utf8"), persisted);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
