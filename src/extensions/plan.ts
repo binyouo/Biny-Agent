@@ -127,7 +127,6 @@ function createPlanStartTool(options: PlanToolOptions): Tool<z.infer<typeof plan
           const sessionId = requireSessionId(context);
           if ("graphId" in args) {
             options.graphs.startSupervisedDraft(args.graphId, sessionId, args.revision);
-            options.graphs.createWake(args.graphId, "plan_started");
             return planStatus(options, args.graphId, sessionId);
           }
           const graph = options.graphs.createSupervisedGraph({
@@ -137,7 +136,6 @@ function createPlanStartTool(options: PlanToolOptions): Tool<z.infer<typeof plan
             payload: { objective: args.objective, constraints: args.constraints ?? [] }
           });
           const started = options.graphs.startGraph(graph.graphId);
-          options.graphs.createWake(graph.graphId, "plan_started");
           return planStatus(options, started.graphId, sessionId);
         }
       };
@@ -239,10 +237,8 @@ function createPlanUpdateTool(options: PlanToolOptions, inspectedRuns: Set<strin
             const gates = new Map(graph.nodes.filter((node) => planBlock(node.intent)?.kind === "review")
               .map((node) => [planBlock(node.intent)!.taskKey, node.nodeKey]));
             options.graphs.addSupervisedNodes(args.graphId, sessionId, additions.map((node) => ({ ...node, dependencies: node.dependencies?.map((key) => gates.get(key) ?? key) })));
-            options.graphs.createWake(args.graphId, "plan_updated");
           } else if (args.action === "replace") {
             options.graphs.replaceSupervisedNode(args.graphId, sessionId, args.nodeId, { nodeKey: args.key, prompt: args.task });
-            options.graphs.createWake(args.graphId, "plan_replaced");
           } else if (args.action === "rework") {
             options.graphs.reworkSupervisedNode(args.graphId, sessionId, args.nodeId);
           } else if (args.action === "stop") {
