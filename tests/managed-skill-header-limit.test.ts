@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { importManagedSkillSource, installManagedSkillSource, listManagedSkillSources } from "../src/extensions/managedSkillSources.js";
+import { parseManagedSkillMetadata } from "../src/extensions/managedSkillSources.js";
 
 const cliPath = path.resolve("src/cli/index.ts");
 const tsxPath = import.meta.resolve("tsx");
@@ -20,16 +20,15 @@ function document(delimiterEnd: number, multibyte = "", newline = "\n", closingW
   return `${header}${closingWhitespace}${newline}${body}`;
 }
 
-async function withFixture(run: (fixture: { root: string; sourceFile: string; sourceRoot: string; skillRoot: string; invoke: (args: string[], input?: string) => ReturnType<typeof invokeCli> }) => Promise<void>): Promise<void> {
+async function withFixture(run: (fixture: { root: string; sourceFile: string; skillRoot: string; invoke: (args: string[], input?: string) => ReturnType<typeof invokeCli> }) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-skill-header-"));
   const sourceFile = path.join(root, "input", skillName, "SKILL.md");
-  const sourceRoot = path.join(root, "sources");
   const skillRoot = path.join(root, "config", "skills");
   try {
     await mkdir(path.dirname(sourceFile), { recursive: true });
     await mkdir(path.join(root, "workspace"));
     await mkdir(path.join(root, "home"));
-    await run({ root, sourceFile, sourceRoot, skillRoot, invoke: (args, input) => invokeCli(root, args, input) });
+    await run({ root, sourceFile, skillRoot, invoke: (args, input) => invokeCli(root, args, input) });
   } finally { await rm(root, { recursive: true, force: true }); }
 }
 
@@ -44,14 +43,16 @@ function invokeCli(root: string, args: string[], input?: string) {
   return result;
 }
 
-test("managed import rejects closing delimiters beyond the runtime UTF-8 byte window before writing", async (context) => {
+test("CLI create rejects closing delimiters beyond the runtime UTF-8 byte window before writing", async (context) => {
   for (const [label, multibyte] of [["ASCII", ""], ["CJK", "界".repeat(21_000)], ["emoji", "😀".repeat(16_000)]]) {
     await context.test(label!, async () => {
-      await withFixture(async ({ sourceFile, sourceRoot, skillRoot }) => {
+      await withFixture(async ({ sourceFile, skillRoot, invoke }) => {
         const content = document(65_537, multibyte);
         await writeFile(sourceFile, content);
-        await assert.rejects(importManagedSkillSource({ sourceFile, root: sourceRoot, installedRoot: skillRoot }), /frontmatter/u);
-        await assert.rejects(readdir(sourceRoot), { code: "ENOENT" });
+        const created = invoke(["create", skillName, "--file", sourceFile]);
+        assert.equal(created.status, 1, created.stderr);
+        assert.equal(created.stdout, "");
+        assert.match(created.stderr, /frontmatter/u);
         await assert.rejects(readdir(path.dirname(skillRoot)), { code: "ENOENT" });
         assert.equal(await readFile(sourceFile, "utf8"), content);
       });
@@ -74,30 +75,24 @@ test("CLI create rejects unreadable headers from file and stdin without success 
   }
 });
 
-test("edited cached sources with unreadable headers are warned and refused without changing source or existing Skills", async () => {
-  await withFixture(async ({ sourceFile, sourceRoot, skillRoot }) => {
-    const original = document(256);
-    await writeFile(sourceFile, original);
-    await importManagedSkillSource({ sourceFile, root: sourceRoot, installedRoot: skillRoot });
+test("CLI create refuses unreadable headers without changing source or existing Skills", async () => {
+  await withFixture(async ({ sourceFile, skillRoot, invoke }) => {
     const existingFile = path.join(skillRoot, "existing-skill", "SKILL.md");
     await mkdir(path.dirname(existingFile), { recursive: true });
     await writeFile(existingFile, "Existing Skill bytes.\n");
-    const managedFile = path.join(sourceRoot, skillName, "SKILL.md");
     const content = document(65_537, "界".repeat(21_000));
-    await writeFile(managedFile, content);
-    const listed = await listManagedSkillSources({ root: sourceRoot, installedRoot: skillRoot });
-    assert.deepEqual(listed.sources, []);
-    assert.equal(listed.warnings.length, 1);
-    assert.match(listed.warnings[0]!, /frontmatter/u);
-    await assert.rejects(installManagedSkillSource({ sourceId: skillName, root: sourceRoot, skillRoot }), /Skill 来源不存在/u);
+    await writeFile(sourceFile, content);
+    const created = invoke(["create", skillName, "--file", sourceFile]);
+    assert.equal(created.status, 1, created.stderr);
+    assert.equal(created.stdout, "");
+    assert.match(created.stderr, /frontmatter/u);
     assert.deepEqual(await readdir(skillRoot), ["existing-skill"]);
     assert.equal(await readFile(existingFile, "utf8"), "Existing Skill bytes.\n");
-    assert.equal(await readFile(managedFile, "utf8"), content);
-    assert.equal(await readFile(sourceFile, "utf8"), original);
+    assert.equal(await readFile(sourceFile, "utf8"), content);
   });
 });
 
-test("complete delimiter at the byte boundary and large bodies retain exact bytes through import, install, list and check", async (context) => {
+test("complete delimiter at the byte boundary and large bodies retain exact bytes through CLI create, list and check", async (context) => {
   const valid = [
     ["one byte before", document(65_535)],
     ["exact ASCII", document(65_536)],
@@ -109,17 +104,14 @@ test("complete delimiter at the byte boundary and large bodies retain exact byte
   ] as const;
   for (const [label, content] of valid) {
     await context.test(label, async () => {
-      await withFixture(async ({ sourceFile, sourceRoot, skillRoot, invoke }) => {
+      await withFixture(async ({ sourceFile, skillRoot, invoke }) => {
         await writeFile(sourceFile, content);
-        await importManagedSkillSource({ sourceFile, root: sourceRoot, installedRoot: skillRoot });
-        const installed = await installManagedSkillSource({ sourceId: skillName, root: sourceRoot, skillRoot });
-        assert.equal(installed.installed, true);
-        for (const file of [sourceFile, path.join(sourceRoot, skillName, "SKILL.md"), path.join(skillRoot, skillName, "SKILL.md")]) {
+        const created = invoke(["create", skillName, "--file", sourceFile]);
+        assert.equal(created.status, 0, created.stderr);
+        assert.equal(created.stderr, "");
+        for (const file of [sourceFile, path.join(skillRoot, skillName, "SKILL.md")]) {
           assert.equal(await readFile(file, "utf8"), content);
         }
-        const managed = await listManagedSkillSources({ root: sourceRoot, installedRoot: skillRoot });
-        assert.deepEqual(managed.warnings, []);
-        assert.equal(managed.sources[0]?.installed, true);
         assertRuntimeVisible(invoke);
       });
     });
@@ -157,11 +149,10 @@ test("CLI create accepts an exact multibyte boundary and a large body without ch
 });
 
 test("full-document validation rejects a fake closing delimiter completed only by truncation", async () => {
-  await withFixture(async ({ sourceFile, sourceRoot, skillRoot, invoke }) => {
+  await withFixture(async ({ sourceFile, skillRoot, invoke }) => {
     const content = `${document(65_536).slice(0, 65_536)}not-a-delimiter\nBody\n`;
     await writeFile(sourceFile, content);
-    await assert.rejects(importManagedSkillSource({ sourceFile, root: sourceRoot, installedRoot: skillRoot }), /结束分隔线/u);
-    await assert.rejects(readdir(sourceRoot), { code: "ENOENT" });
+    assert.throws(() => parseManagedSkillMetadata(content, skillName), /结束分隔线/u);
     const created = invoke(["create", skillName, "--file", sourceFile]);
     assert.equal(created.status, 1, created.stderr);
     assert.equal(created.stdout, "");
@@ -172,26 +163,27 @@ test("full-document validation rejects a fake closing delimiter completed only b
 });
 
 test("a UTF-8 codepoint split by the metadata read window cannot make an oversized header valid", async () => {
-  await withFixture(async ({ sourceFile, sourceRoot, skillRoot }) => {
+  await withFixture(async ({ sourceFile, skillRoot, invoke }) => {
     const prefix = `---\nname: ${skillName}\ndescription: Header boundary fixture\nmetadata:\n  note: `;
     const content = `${prefix}${"界".repeat(22_000)}\n---\nBody\n`;
     assert.equal(Buffer.from(content).subarray(0, 65_536).toString("utf8").endsWith("\uFFFD"), true);
     await writeFile(sourceFile, content);
-    await assert.rejects(importManagedSkillSource({ sourceFile, root: sourceRoot, installedRoot: skillRoot }), /frontmatter/u);
-    await assert.rejects(readdir(sourceRoot), { code: "ENOENT" });
+    const created = invoke(["create", skillName, "--file", sourceFile]);
+    assert.equal(created.status, 1, created.stderr);
+    assert.equal(created.stdout, "");
+    assert.match(created.stderr, /frontmatter/u);
     await assert.rejects(readdir(path.dirname(skillRoot)), { code: "ENOENT" });
   });
 });
 
 test("a valid YAML key beginning with dashes cannot impersonate a delimiter at the byte boundary", async (context) => {
   const content = `${document(65_536).slice(0, 65_536)}not-a-delimiter: accepted\ncompatibility: Declared after the read window\n---\nBody\n`;
-  for (const entry of ["managed import", "CLI create"]) {
+  for (const entry of ["metadata validation", "CLI create"]) {
     await context.test(entry, async () => {
-      await withFixture(async ({ sourceFile, sourceRoot, skillRoot, invoke }) => {
+      await withFixture(async ({ sourceFile, skillRoot, invoke }) => {
         await writeFile(sourceFile, content);
-        if (entry === "managed import") {
-          await assert.rejects(importManagedSkillSource({ sourceFile, root: sourceRoot, installedRoot: skillRoot }), /frontmatter/u);
-          await assert.rejects(readdir(sourceRoot), { code: "ENOENT" });
+        if (entry === "metadata validation") {
+          assert.throws(() => parseManagedSkillMetadata(content, skillName), /frontmatter/u);
         } else {
           const created = invoke(["create", skillName, "--file", sourceFile]);
           assert.equal(created.status, 1, created.stderr);

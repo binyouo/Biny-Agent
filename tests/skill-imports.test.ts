@@ -32,6 +32,22 @@ async function main(): Promise<void> {
     assert.equal(afterImport.warnings.length, 0);
     assert.equal(afterImport.skills.some((skill) => skill.source === "biny" && skill.name === "import-me"), true);
     assert.equal(listUnmanagedSkillCandidates(afterImport).length, 0);
+
+    const unsafeSource = path.join(homeDir, ".claude", "skills", "unsafe-skill");
+    await mkdir(unsafeSource);
+    const unsafeDocument = "---\nname: unsafe-skill\ndescription: Unsafe resource fixture\n---\n";
+    await writeFile(path.join(unsafeSource, "SKILL.md"), unsafeDocument);
+    const externalFile = path.join(root, "external.txt");
+    await writeFile(externalFile, "External source bytes.\n");
+    await symlink(externalFile, path.join(unsafeSource, "linked.txt"));
+    await symlink(unsafeSource, path.join(agentsRoot, "unsafe-skill"), "dir");
+    const unsafe = listUnmanagedSkillCandidates(await scanSkillCatalog({ homeDir })).find(candidate => candidate.name === "unsafe-skill");
+    assert.ok(unsafe);
+    await assert.rejects(importUnmanagedSkills({ homeDir, ids: [unsafe.id] }), /资源不能是符号链接/u);
+    await assert.rejects(lstat(path.join(homeDir, ".config", "biny", "skills", "unsafe-skill")), { code: "ENOENT" });
+    assert.equal(await readFile(path.join(unsafeSource, "SKILL.md"), "utf8"), unsafeDocument);
+    assert.equal(await readFile(externalFile, "utf8"), "External source bytes.\n");
+    assert.equal(await readFile(path.join(homeDir, ".config", "biny", "skills", "import-me", "references", "guide.md"), "utf8"), "# Guide\n");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

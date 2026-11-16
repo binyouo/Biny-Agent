@@ -64,6 +64,7 @@ async function main(): Promise<void> {
       if (update.event?.type === "skill_extraction.updated") extractionEvents.push(update.event);
     });
     const sessionId = commands.agent.getInfo().sessionId;
+    commands.captureRunResourceSnapshot!("before-extraction");
 
     const outcome = await runtime.submitPrompt("按既定流程跑一遍 echo 工作流。").completion;
     assert.equal(outcome.status, "completed");
@@ -92,6 +93,12 @@ async function main(): Promise<void> {
     // 刷新链路：下一回合的技能目录必须包含新技能（refreshSkills 已强制重扫）。
     const refreshed = commands.listSkills();
     assert.equal(refreshed.some((skill) => skill.name === "echo-workflow"), true, "提取的技能下一回合即可被发现");
+    const extractedSkillPath = path.join("skills", "echo-workflow", "SKILL.md");
+    assert.equal(commands.runSkillPaths!("before-extraction").some(file => file.endsWith(extractedSkillPath)), false, "目录刷新不能修改已经固定的回合快照");
+    commands.captureRunResourceSnapshot!("after-extraction");
+    assert.equal(commands.runSkillPaths!("after-extraction").some(file => file.endsWith(extractedSkillPath)), true, "新回合快照读取最新资源目录");
+    commands.releaseRunResourceSnapshot!("before-extraction");
+    commands.releaseRunResourceSnapshot!("after-extraction");
     console.log("skill extraction runtime e2e passed");
   } finally {
     await runtime?.close();
