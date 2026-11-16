@@ -1,15 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { RedactionStore } from "../src/privacy/store.js";
 import {
   maskText,
   maskJson,
-  restore,
   restoreJson,
   pendingTailLength,
   placeholderTag,
   placeholderPattern,
-  resetStoreForTest,
-  registeredCount,
   defaultRedactionSettings,
   type RedactionSettings
 } from "../src/privacy/index.js";
@@ -23,14 +21,14 @@ const REAL_KEY = "sk-ant-api03-" + "Q7bK2mZ9pL4nR8sT1vW5xY0aC3dE6fG9hJ2k";
 const realKeyPlaceholder = (): string => placeholderTag("API_KEY", REAL_KEY);
 
 test("a secret is replaced by a stable placeholder and restores to the original", () => {
-  resetStoreForTest();
-  const first = maskText(`key=${REAL_KEY}`, on());
+  const store = new RedactionStore();
+  const first = maskText(`key=${REAL_KEY}`, on(), store);
   assert.equal(first.text, `key=${realKeyPlaceholder()}`);
   assert.equal(first.hits.length, 1);
   assert.equal(first.hits[0]!.kind, "API_KEY");
   // 稳定性：同一值再次脱敏得到同一占位符
-  assert.equal(maskText(`again ${REAL_KEY}`, on()).text, `again ${realKeyPlaceholder()}`);
-  assert.equal(restore(first.text), `key=${REAL_KEY}`);
+  assert.equal(maskText(`again ${REAL_KEY}`, on(), store).text, `again ${realKeyPlaceholder()}`);
+  assert.equal(store.restore(first.text), `key=${REAL_KEY}`);
 });
 
 test("placeholder is deterministic for the same kind+value and distinct across values", () => {
@@ -43,48 +41,48 @@ test("placeholder is deterministic for the same kind+value and distinct across v
 });
 
 test("private key block is masked and restored", () => {
-  resetStoreForTest();
+  const store = new RedactionStore();
   const pem = ["-----BEGIN", "PRIVATE KEY-----", "MIIBVAIBADANBgkq", "-----END", "PRIVATE KEY-----"].join(" ");
-  const out = maskText(`before ${pem} after`, on());
+  const out = maskText(`before ${pem} after`, on(), store);
   assert.equal(out.hits.length, 1);
   assert.equal(out.hits[0]!.kind, "PRIVATE_KEY");
-  assert.equal(restore(out.text), `before ${pem} after`);
+  assert.equal(store.restore(out.text), `before ${pem} after`);
 });
 
 test("a single switch masks secrets and personal data together", () => {
-  resetStoreForTest();
+  const store = new RedactionStore();
   const text = `key ${REAL_KEY} mail li.wei@acme-corp.cn call 13800138000 card 4111111111111111`;
-  const off = maskText(text, defaultRedactionSettings);
+  const off = maskText(text, defaultRedactionSettings, store);
   assert.equal(off.hits.length, 0);
-  const result = maskText(text, on());
+  const result = maskText(text, on(), store);
   const kinds = new Set(result.hits.map((hit) => hit.kind));
   assert.ok(kinds.has("API_KEY") && kinds.has("EMAIL") && kinds.has("PHONE") && kinds.has("BANK_CARD"));
-  assert.equal(restore(result.text), text);
+  assert.equal(store.restore(result.text), text);
 });
 
 test("an invalid bank card (failed Luhn) is left alone", () => {
-  resetStoreForTest();
-  assert.equal(maskText("card 4111111111111112", on()).hits.length, 0);
+  const store = new RedactionStore();
+  assert.equal(maskText("card 4111111111111112", on(), store).hits.length, 0);
 });
 
 test("a value masked once is masked again anywhere, even without surrounding context", () => {
-  resetStoreForTest();
-  maskText(REAL_KEY, on());
-  const again = maskText(`the model said ${REAL_KEY} here`, on());
+  const store = new RedactionStore();
+  maskText(REAL_KEY, on(), store);
+  const again = maskText(`the model said ${REAL_KEY} here`, on(), store);
   assert.equal(again.hits.length, 1);
   assert.equal(again.text, `the model said ${realKeyPlaceholder()} here`);
 });
 
 test("maskText reports the original and masked value of each hit for the record", () => {
-  resetStoreForTest();
-  const result = maskText(`key=${REAL_KEY}`, on());
+  const store = new RedactionStore();
+  const result = maskText(`key=${REAL_KEY}`, on(), store);
   assert.equal(result.segments.length, 1);
   assert.equal(result.segments[0]!.original, REAL_KEY);
   assert.equal(result.segments[0]!.masked, realKeyPlaceholder());
 });
 
 test("maskJson skips ids and encoded data, masks message content, restores back", () => {
-  resetStoreForTest();
+  const store = new RedactionStore();
   const idValue = "req_sk-proj-ZZZZ0123456789ZZZZ0123456789";
   const dataValue = "data:image/png;base64,AAAABBBBCCCC";
   const body = JSON.stringify({
@@ -92,30 +90,30 @@ test("maskJson skips ids and encoded data, masks message content, restores back"
     messages: [{ role: "user", content: `my key is ${REAL_KEY} thanks` }],
     metadata: { id: idValue, data: dataValue }
   });
-  const result = maskJson(body, on());
+  const result = maskJson(body, on(), store);
   assert.equal(result.hits.length, 1);
   const parsed = JSON.parse(result.text) as { model: string; messages: Array<{ content: string }>; metadata: { id: string; data: string } };
   assert.equal(parsed.model, "deepseek-v4");
   assert.equal(parsed.messages[0]!.content, `my key is ${realKeyPlaceholder()} thanks`);
   assert.equal(parsed.metadata.id, idValue);
   assert.equal(parsed.metadata.data, dataValue);
-  assert.equal(restoreJson(result.text), body);
+  assert.equal(restoreJson(result.text, value => store.restore(value)), body);
 });
 
 test("maskJson leaves tool definition schema structure but masks its description", () => {
-  resetStoreForTest();
+  const store = new RedactionStore();
   const body = JSON.stringify({
     tools: [{ name: "read_file", description: `reads a file with token ${REAL_KEY}`, input_schema: { type: "object", properties: { path: { type: "string" } } } }]
   });
-  const parsed = JSON.parse(maskJson(body, on()).text) as { tools: Array<{ name: string; description: string; input_schema: { properties: Record<string, unknown> } }> };
+  const parsed = JSON.parse(maskJson(body, on(), store).text) as { tools: Array<{ name: string; description: string; input_schema: { properties: Record<string, unknown> } }> };
   assert.equal(parsed.tools[0]!.name, "read_file");
   assert.equal(parsed.tools[0]!.description, `reads a file with token ${realKeyPlaceholder()}`);
   assert.deepEqual(Object.keys(parsed.tools[0]!.input_schema.properties), ["path"]);
 });
 
 test("non-JSON request body falls back to text masking", () => {
-  resetStoreForTest();
-  const result = maskJson(`plain ${REAL_KEY} text`, on());
+  const store = new RedactionStore();
+  const result = maskJson(`plain ${REAL_KEY} text`, on(), store);
   assert.equal(result.hits.length, 1);
   assert.equal(result.text, `plain ${realKeyPlaceholder()} text`);
 });
@@ -129,21 +127,21 @@ test("pendingTailLength holds a split placeholder prefix and releases the rest",
 });
 
 test("restoreJson restores a whole JSON response", () => {
-  resetStoreForTest();
+  const store = new RedactionStore();
   const placeholder = realKeyPlaceholder();
-  maskText(REAL_KEY, on());
+  maskText(REAL_KEY, on(), store);
   const response = JSON.stringify({ choices: [{ message: { content: `the key is ${placeholder}` } }] });
-  assert.equal(restoreJson(response), response.replace(placeholder, REAL_KEY));
+  assert.equal(restoreJson(response, value => store.restore(value)), response.replace(placeholder, REAL_KEY));
 });
 
 test("nothing is registered when no rule matches", () => {
-  resetStoreForTest();
-  maskText("just some ordinary words", on());
-  assert.equal(registeredCount(), 0);
+  const store = new RedactionStore();
+  maskText("just some ordinary words", on(), store);
+  assert.equal(store.count, 0);
 });
 
 test("Personal data categories are recognized with strict validation", () => {
-  resetStoreForTest();
+  const store = new RedactionStore();
   const cases: Array<[string, string]> = [
     ["SSN", "ssn 457-55-5462 here"],
     ["PASSPORT", "passport no. X1234567"],
@@ -156,14 +154,14 @@ test("Personal data categories are recognized with strict validation", () => {
     ["BUCKET", "s3://acme-corp-backups/data"]
   ];
   for (const [kind, text] of cases) {
-    const result = maskText(text, on());
+    const result = maskText(text, on(), store);
     assert.ok(result.hits.some((hit) => hit.kind === kind), `${kind} should be masked in ${JSON.stringify(text)}`);
-    assert.equal(restore(result.text), text);
+    assert.equal(store.restore(result.text), text);
   }
 });
 
 test("strict validators leave non-matching look-alikes alone (protects ordinary code/text)", () => {
-  resetStoreForTest();
+  const store = new RedactionStore();
   const untouched = [
     "version 1.2.3.4",           // 版本号不是 IP
     "10.0.0.1 and 192.168.1.1",  // 私网 IP
@@ -174,12 +172,12 @@ test("strict validators leave non-matching look-alikes alone (protects ordinary 
     "aa:bb:cc:dd:ee:ff"           // 占位 MAC
   ];
   for (const text of untouched) {
-    assert.equal(maskText(text, on()).hits.length, 0, `should not mask ${JSON.stringify(text)}`);
+    assert.equal(maskText(text, on(), store).hits.length, 0, `should not mask ${JSON.stringify(text)}`);
   }
 });
 
 test("model-capability invariant: ids, signature blocks and tool schema are never rewritten", () => {
-  resetStoreForTest();
+  const store = new RedactionStore();
   const body = JSON.stringify({
     model: "claude-x",
     messages: [
@@ -189,7 +187,7 @@ test("model-capability invariant: ids, signature blocks and tool schema are neve
     tool_calls: [{ id: "call_1234567890abcdef", type: "function", function: { name: "read_file", arguments: "{\"path\":\"/etc/hosts\"}" } }],
     tools: [{ type: "function", function: { name: "read_file", description: `reads with ${REAL_KEY}`, parameters: { type: "object", properties: { path: { type: "string" } } } } }]
   });
-  const out = maskJson(body, on()).text;
+  const out = maskJson(body, on(), store).text;
   const parsed = JSON.parse(out) as {
     model: string;
     messages: Array<{ content: unknown }>;
