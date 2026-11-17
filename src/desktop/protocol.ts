@@ -662,6 +662,7 @@ export interface DesktopPermissionSettings {
 
 /** 渲染进程启动时一次性取回的初始状态，之后的变化都通过事件推送。 */
 export interface DesktopBootstrap {
+  quickChatSettings?: DesktopQuickChatSettings;
   chatResponse?: import("../config/schema.js").ChatResponseSettings;
   version: string;
   platform: NodeJS.Platform;

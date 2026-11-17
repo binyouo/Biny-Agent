@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { buildSessionTree, getSessionCatalogItem, listSessionCatalog, querySessionCatalog, readSessionCatalogRecord, readSessionTree, SessionCatalogConflictError, sessionCatalogDirectory, sessionCatalogRecordRevision, updateSessionCatalogMetadata } from "../src/session/catalog.js";
+import { buildSessionTree, listSessionCatalog, querySessionCatalog, readSessionCatalogRecord, SessionCatalogConflictError, sessionCatalogDirectory, sessionCatalogRecordRevision, updateSessionCatalogMetadata } from "../src/session/catalog.js";
 import { forkSession } from "../src/session/fork.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
@@ -31,7 +31,6 @@ try {
   assert.equal(child.parentSessionId, source.id);
   assert.equal(child.rootSessionId, source.id);
   assert.deepEqual(child.branchPoint, { kind: "event", index: 2 });
-  assert.equal((await getSessionCatalogItem(root, child.id))?.parentSessionId, source.id);
   const childRecord = await readSessionCatalogRecord(root, child.id);
   assert.deepEqual(childRecord, {
     version: 1,
@@ -43,9 +42,9 @@ try {
     updatedAt: childRecord?.updatedAt
   });
 
-  const childRevision = (await getSessionCatalogItem(root, child.id))?.metadataRevision;
+  const childRevision = child.metadataRevision;
   await updateSessionCatalogMetadata(root, child.id, { title: "子会话", unread: true }, childRevision);
-  const updatedChild = await getSessionCatalogItem(root, child.id);
+  const updatedChild = (await listSessionCatalog(root)).find(item => item.id === child.id);
   assert.equal(updatedChild?.title, "子会话");
   assert.equal(updatedChild?.unread, true);
   await assert.rejects(
@@ -129,7 +128,7 @@ try {
   assert.equal(tree.length, 1);
   assert.equal(tree[0]?.session.id, source.id);
   assert.equal(tree[0]?.children[0]?.session.id, child.id);
-  assert.equal((await readSessionTree(root))[0]?.children[0]?.session.id, child.id);
+  assert.equal(buildSessionTree(await listSessionCatalog(root))[0]?.children[0]?.session.id, child.id);
   console.log("session catalog tests passed");
 } finally {
   await rm(root, { recursive: true, force: true });

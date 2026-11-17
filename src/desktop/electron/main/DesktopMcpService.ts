@@ -54,6 +54,7 @@ export class DesktopMcpService {
   private readonly logins = new McpOAuthLogins();
   private readonly startingLogins = new Set<string>();
   private readonly loginServers = new Map<string, { projectId?: string; name: string; config: McpServerConfig }>();
+  private catalogRefresh?: Promise<void>;
   private catalogState: CatalogStateInternal = {
     status: "idle",
     source: MCP_CATALOG_URL,
@@ -127,6 +128,15 @@ export class DesktopMcpService {
   async dispose(): Promise<void> { await this.logins.dispose(); this.loginServers.clear(); }
 
   async refreshCatalog(): Promise<DesktopMcpCatalogState> {
+    // Tab re-entry and other windows share the same in-flight marketplace fetch.
+    // Return a separate snapshot to each caller; a settled refresh is never cached here.
+    const pending = this.catalogRefresh ??= this.fetchCatalog();
+    try { await pending; }
+    finally { if (this.catalogRefresh === pending) this.catalogRefresh = undefined; }
+    return this.catalog();
+  }
+
+  private async fetchCatalog(): Promise<void> {
     const previous = this.catalogState;
     this.catalogState = {
       ...previous,
@@ -157,7 +167,6 @@ export class DesktopMcpService {
         error: errorText(error)
       };
     }
-    return this.catalog();
   }
 
   async upsertServer(

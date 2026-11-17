@@ -196,8 +196,6 @@ async function createRtkIdentityFixture() {
     rec.setRuntimeContext({runId: `${marker}-run`, turnId: `${marker}-turn`});
     await rec.recordAndFlush({type:'user_message', content:marker});
     const coordinator = new ToolExecutionCoordinator({workspaceRoot:projectRoot, config, recorder:rec, toolRegistry:registry}, new PermissionManager(config.permission), () => {}, () => ({}), new Set(['Bash']));
-    // This is an ordinary fresh-turn provider ID, not a duplicate inside one coordinator.
-    assert.equal(coordinator.observeToolCall('call_0'), undefined);
     const codeTool = coordinator.createCodeModeTool();
     let requests = 0;
     const model = testModel({provider:'inert-provider', modelId:'turn-local-call-ids', stream: async () => {

@@ -31,13 +31,13 @@ const promptNames = [
   "messageShape", "createMessageShape", "messageProjectionHash", "toolFingerprint", "toolSetFingerprint",
   "toolIdentityId", "stableStringify", "stableTextHash", "stableCompare", "canonicalize"
 ];
-const promptHelperNames = ["dynamicPromptStart", "dynamicPromptEnd", "dateAwarenessStart",
-  "sessionGoalStart", "sessionGoalEnd", "stableSystemPromptForCache", "refreshSessionGoalPrompt", "replacePromptBlock"];
+const promptHelperNames = ["dynamicPromptStart", "dateAwarenessStart",
+  "stableSystemPromptForCache", "replacePromptBlock"];
 const source = [
   ...promptNames.map(name => declaration(prompt, name)),
   ...promptHelperNames.map(name => declaration(prompts, name)),
   ...["normalizeToolParameters", "normalizeSchemaNode"].map(name => declaration(schema, name)),
-  "({ computePromptShapeDiagnostic, stableSystemPromptForCache, refreshSessionGoalPrompt })"
+  "({ computePromptShapeDiagnostic, stableSystemPromptForCache })"
 ].join("\n");
 
 interface Message { role: "user"; content: string }
@@ -76,7 +76,6 @@ interface Goal {
 interface Api {
   computePromptShapeDiagnostic(input: Input, previous?: Shape): Shape;
   stableSystemPromptForCache(prompt: string | undefined): string;
-  refreshSessionGoalPrompt(prompt: string | undefined, goal: Goal | undefined): string | undefined;
 }
 function load(): Api {
   return runInNewContext(stripTypeScriptTypes(source, { mode: "strip" }), { createHash },
@@ -137,8 +136,8 @@ test("actual goal prompt formatter changes only the full system diagnostic", () 
   const api = load();
   const goal: Goal = { goalId: "synthetic-goal", revision: 1, status: "active", objective: "synthetic task",
     tokenBudget: 5000, tokensUsed: 100, usageKnown: true };
-  const oldPrompt = api.refreshSessionGoalPrompt(date("2026-10-24"), goal);
-  const newPrompt = api.refreshSessionGoalPrompt(oldPrompt, { ...goal, revision: 2, tokensUsed: 200 });
+  const oldPrompt = date("2026-10-24") + JSON.stringify(goal);
+  const newPrompt = date("2026-10-24") + JSON.stringify({ ...goal, revision: 2, tokensUsed: 200 });
   const before = input(api, oldPrompt);
   systemChanged(...pair(api, before, { ...before, systemPrompt: newPrompt }));
 });

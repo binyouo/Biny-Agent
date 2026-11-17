@@ -102,7 +102,3 @@ function standsAlone(kind: string, text: string, start: number, end: number, fie
   if (kind === "BANK_CARD" || kind === "ID_CARD") return !/[A-Za-z0-9]/u.test(adjacent);
   return true;
 }
-
-export const defaultStore = new RedactionStore();
-export function resetStoreForTest(): void { defaultStore.clear(); }
-export function registeredCount(): number { return defaultStore.count; }

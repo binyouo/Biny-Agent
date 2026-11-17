@@ -381,8 +381,29 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
   return scopeHistoricalLoadedSkills(events, createHistoricalTimelineFold(events).append(events));
 }
 
+/** Execution evidence attaches to the first call with an ID, unlike tool results. */
+function createHistoricalToolLookup(): (turn: TimelineTurn, id: string) => TimelineTool | undefined {
+  const indexes = new WeakMap<TimelineTurn, { count: number; firstById: Map<string, TimelineTool> }>();
+  return (turn, id) => {
+    let index = indexes.get(turn);
+    if (!index) {
+      index = { count: 0, firstById: new Map() };
+      indexes.set(turn, index);
+    }
+    // Historical folds only append tools. Index lazily so histories without execution
+    // evidence pay no indexing cost, and incremental appends retain their prior work.
+    while (index.count < turn.tools.length) {
+      const tool = turn.tools[index.count++]!;
+      if (!index.firstById.has(tool.id)) index.firstById.set(tool.id, tool);
+    }
+    return index.firstById.get(id);
+  };
+}
+
 function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(events: SessionEvent[]): TimelineTurn[] } {
   const appendAssistant = createHistoricalAssistantAppender();
+  const appendModelRequest = createHistoricalModelRequestAppender();
+  const findExecutionTool = createHistoricalToolLookup();
   const metadataById = historicalUserMetadata(initialEvents, initialEvents);
   const turns: TimelineTurn[] = [];
   let current: TimelineTurn | undefined;
@@ -505,7 +526,7 @@ function createHistoricalTimelineFold(initialEvents: SessionEvent[]): { append(e
         }
         if (event.type === "agent_message") continue;
         if (event.type === "tool_execution") {
-          const tool = ensureTurn(event.time).tools.find((candidate) => candidate.id === event.toolCallId);
+          const tool = findExecutionTool(ensureTurn(event.time), event.toolCallId);
           if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
           continue;
         }
@@ -548,6 +569,8 @@ interface HistoricalVersionRecord {
 /** 新消息树的历史投影：同一 user turn 下只展示活动版本，工具事件按 runId 回填。 */
 function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
   const appendAssistant = createHistoricalAssistantAppender();
+  const appendModelRequest = createHistoricalModelRequestAppender();
+  const findExecutionTool = createHistoricalToolLookup();
   const activeEvents = activeSessionEventsForPath(events);
   const metadataById = historicalUserMetadata(events, activeEvents);
   const turns: TimelineTurn[] = [];
@@ -713,7 +736,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       continue;
     }
     if (event.type === "tool_execution") {
-      const tool = turnForEvent(event, event.time).tools.find((candidate) => candidate.id === event.toolCallId);
+      const tool = findExecutionTool(turnForEvent(event, event.time), event.toolCallId);
       if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
       continue;
     }
@@ -775,6 +798,8 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
   const turns = new Map<string, TimelineTurn>();
   const order: string[] = [];
   const toolMaps = new Map<string, Map<string, TimelineTool>>();
+  // Counts belong to this fold, including retry notices and removal of empty assistant steps.
+  const stepCounts = new Map<string, { reasoning: number; assistant: number }>();
   const activeReasoning = new Map<string, TimelineReasoningStep>();
   const activeAssistant = new Map<string, TimelineAssistantStep>();
   let userMessageIndex = initialUserMessageIndex;
@@ -792,6 +817,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     const turn = emptyTurn(event.runId, event.timestamp);
     turns.set(event.runId, turn);
     toolMaps.set(event.runId, new Map());
+    stepCounts.set(event.runId, { reasoning: 0, assistant: 0 });
     order.push(event.runId);
     return turn;
   };
@@ -857,7 +883,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     const status = event.phase === "initial" ? "正在分析任务" : "正在继续处理";
     const step: TimelineReasoningStep = {
       kind: "reasoning",
-      id: `${event.runId}:reasoning:${String(turn.steps.filter((candidate) => candidate.kind === "reasoning").length)}`,
+      id: `${event.runId}:reasoning:${String(stepCounts.get(turn.id)!.reasoning++)}`,
       content: "",
       status,
       startedAt: event.timestamp
@@ -885,7 +911,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     }
     const step: TimelineAssistantStep = {
       kind: "assistant",
-      id: `${turn.id}:assistant:${String(turn.steps.filter((candidate) => candidate.kind === "assistant").length)}`,
+      id: `${turn.id}:assistant:${String(stepCounts.get(turn.id)!.assistant++)}`,
       content
     };
     turn.steps.push(step);
@@ -899,7 +925,10 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     const content = redactSecrets(publicAssistantMessage(step.content)).trimEnd();
     const index = turn.steps.indexOf(step);
     if (!content) {
-      if (index >= 0) turn.steps.splice(index, 1);
+      if (index >= 0) {
+        turn.steps.splice(index, 1);
+        stepCounts.get(turn.id)!.assistant--;
+      }
     } else {
       step.content = content;
       step.summary = true;
@@ -951,6 +980,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       if (event.context.capabilitySelection) turn.capabilitySelection = event.context.capabilitySelection;
       if (event.context.loadedSkills !== undefined) turn.skills = [...new Set([...turn.skills, ...loadedSkillNamesFromValue(event.context.loadedSkills)])];
     } else if (event.type === "context.retrying") {
+      stepCounts.get(turn.id)!.reasoning++;
       turn.steps.push({
         kind: "reasoning",
         id: `${event.runId}:context-retry:${String(event.attempt)}`,
@@ -1251,7 +1281,8 @@ export type TimelineActivityEvent =
   | Pick<Extract<SessionEvent, { type: "user_message" }>, "type" | "content" | "time">
   | Pick<Extract<SessionEvent, { type: "assistant_message" }>, "type" | "content" | "reasoningContent" | "time">
   | Pick<Extract<SessionEvent, { type: "tool_call" }>, "type" | "tool" | "toolCallId" | "args" | "time">
-  | Pick<Extract<SessionEvent, { type: "tool_result" }>, "type" | "tool" | "toolCallId" | "result" | "executionStatus" | "time">;
+  | Pick<Extract<SessionEvent, { type: "tool_result" }>, "type" | "tool" | "toolCallId" | "result" | "executionStatus" | "operationId" | "time">
+  | Extract<SessionEvent, { type: "tool_execution" }>;
 
 export interface SessionTimelineProjector {
   update(input: { sessionId: string; events: SessionEvent[]; liveEvents: AgentHostEvent[] }): TimelineTurn[];
@@ -1612,11 +1643,19 @@ function injectedMemorySummaries(value: unknown): string[] | undefined {
 }
 
 /** 后台压缩/记忆请求不属于聊天执行 Trace；重复落盘只保留一次。 */
-function appendModelRequest(turn: TimelineTurn, metrics: TimelineModelRequest): void {
-  if (metrics.requestContext?.operation && metrics.requestContext.operation !== "agent") return;
-  const existing = turn.modelRequests?.find((item) => item.requestId === metrics.requestId);
-  if (existing) { if (!existing.output && metrics.output) existing.output = metrics.output; return; }
-  (turn.modelRequests ??= []).push({ ...metrics });
+function createHistoricalModelRequestAppender(): (turn: TimelineTurn, metrics: TimelineModelRequest) => void {
+  // Keep the index private to this history fold, including incremental appends.
+  const byTurn = new WeakMap<TimelineTurn, Map<string, TimelineModelRequest>>();
+  return (turn, metrics) => {
+    if (metrics.requestContext?.operation && metrics.requestContext.operation !== "agent") return;
+    let requests = byTurn.get(turn);
+    if (!requests) { requests = new Map(); byTurn.set(turn, requests); }
+    const existing = requests.get(metrics.requestId);
+    if (existing) { if (!existing.output && metrics.output) existing.output = metrics.output; return; }
+    const entry = { ...metrics };
+    requests.set(metrics.requestId, entry);
+    (turn.modelRequests ??= []).push(entry);
+  };
 }
 
 /** 终态仍保留实时正文时，把同 run 的已落盘指标附回去；按输入引用缓存，避免逐帧扫描 session。 */

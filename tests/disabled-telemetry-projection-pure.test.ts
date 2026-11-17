@@ -41,6 +41,7 @@ function checkCalls(nodes: readonly ts.Node[], source: ts.SourceFile): void {
           || member === "catch" && ts.isCallExpression(receiver) && receiver.expression.getText(source) === "appendSecureTelemetry"
           || member === "exec" && ["beginPattern", "endPattern", "legacyQuotedPattern", "completeQuotedPattern"].includes(name)
           || member === "slice" && name === "value"
+          || member === "filter" && name === "messages"
           || member === "push" && ["parts", "legacySpans", "completeSpans", "quotedParts"].includes(name)
           || member === "join" && ["parts", "quotedParts"].includes(name)
           || member === "replace" && replaceRoot(receiver);

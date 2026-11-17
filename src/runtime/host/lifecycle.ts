@@ -102,7 +102,8 @@ export function spawnRuntimeHostProcess(
   const plan = runtimeHostLaunchPlan(persistenceRoot, options);
   const moduleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
   const child = spawn(plan.executable, plan.args, {
-    cwd: moduleRoot,
+    // Desktop 打包后的模块根可能是 app.asar 文件；源码 Node 入口仍需模块根解析 tsx。
+    cwd: options.electronAppPath === undefined ? moduleRoot : path.resolve(options.workspaceRoot),
     detached: true,
     windowsHide: true,
     // 控制 socket 可以重连；这条 IPC 仅代表启动者寿命，不能与业务连接混为一谈。

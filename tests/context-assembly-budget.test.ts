@@ -59,6 +59,7 @@ estimateTokens = value => { if (!inMessage) systemCalls += 1; return originalEst
 JSON.stringify = value => { stringifyCalls += 1; return originalStringify(value); };
 ({
   assemble({ messages, systemParts, includedMemoryMatches, maxTokens, requestedTokens, usedCheckpointTokens, reserveTokens, omitted, components, autoCompacted }) {
+    const selectedHistory = messages;
     ${tail.map(node => node.getText(context)).join("\n")}
   },
   estimate: estimateMessageTokens,
@@ -109,7 +110,7 @@ function verify(input: Inputs): Output {
   const usedTokens = api.estimate(input.messages) + api.tokens(systemPrompt ?? "") + input.usedCheckpointTokens;
   const output = api.assemble(input);
   assert.deepEqual({ ...output, budget: { ...output.budget } }, {
-    systemPrompt, messages: input.messages, includedMemoryMatches: input.includedMemoryMatches,
+    historyMessageCount: input.messages.length, systemPrompt, messages: input.messages, includedMemoryMatches: input.includedMemoryMatches,
     budget: { maxTokens: input.maxTokens, usedTokens, requestedTokens: input.requestedTokens, estimatedTokens: usedTokens,
       providerInputTokens: undefined, reserveTokens: input.reserveTokens, omitted: input.omitted,
       components: input.components, autoCompacted: input.autoCompacted, source: "estimated", measuredAt: undefined }

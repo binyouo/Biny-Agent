@@ -11,7 +11,7 @@ import { createVercelLanguageModel } from "../src/llm/vercelModel.js";
 import { forkSession } from "../src/session/fork.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
-import { getSessionCatalogItem, updateSessionCatalogMetadata } from "../src/session/catalog.js";
+import { listSessionCatalog, updateSessionCatalogMetadata } from "../src/session/catalog.js";
 
 test("model directory and configured profiles preserve explicit priority tier support", () => {
   const [entry] = parseModelCatalog({ data: [{ id: "routed-model", service_tiers: ["priority", "default"] }] }, "gateway", "openai-compatible");
@@ -76,12 +76,12 @@ test("fast mode metadata persists with session branches", async () => {
     await recorder.close();
 
     await updateSessionCatalogMetadata(root, recorder.sessionId, { fastMode: true });
-    assert.equal((await getSessionCatalogItem(root, recorder.sessionId))?.fastMode, true);
+    assert.equal((await listSessionCatalog(root)).find(item => item.id === recorder.sessionId)?.fastMode, true);
 
     const branch = await forkSession(root, recorder.sessionId);
-    assert.equal((await getSessionCatalogItem(root, branch.sessionId))?.fastMode, true);
+    assert.equal((await listSessionCatalog(root)).find(item => item.id === branch.sessionId)?.fastMode, true);
     await updateSessionCatalogMetadata(root, branch.sessionId, { fastMode: false });
-    assert.equal((await getSessionCatalogItem(root, branch.sessionId))?.fastMode, false);
+    assert.equal((await listSessionCatalog(root)).find(item => item.id === branch.sessionId)?.fastMode, false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

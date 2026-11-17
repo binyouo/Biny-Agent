@@ -24,7 +24,11 @@ export function WorkspaceCommitPanel({ projectId, active, onCount, onSwitchBranc
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const adopt = useCallback((next: DesktopGitStatus): void => {
     setSnapshot(next); onCount(next.files.length);
-    setSelected((previous) => new Set([...previous].filter((file) => next.files.some((entry) => entry.path === file))));
+    setSelected((previous) => {
+      if (previous.size === 0) return previous;
+      const paths = new Set(next.files.map((entry) => entry.path));
+      return new Set([...previous].filter((file) => paths.has(file)));
+    });
   }, [onCount]);
   const refresh = useCallback(async (): Promise<void> => {
     if (inFlight.current) return;
