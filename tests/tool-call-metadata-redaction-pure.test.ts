@@ -21,9 +21,9 @@ import { z } from "zod";
 
 // This optional harness selector is a repository path, never credential/config data.
 const root = process.env.BINY_TOOL_METADATA_SOURCE_ROOT ?? process.cwd();
-const directCalls = new Set(["redactSensitiveValueInternal", "redactSecrets", "isSensitiveFieldName", "redactSensitiveValue", "isDeepStrictEqual", "redactToolCallForPersistence", "redactBrowserToolCall", "redactBrowserToolArguments"]);
+const directCalls = new Set(["matchesWireArguments", "keys", "redactSensitiveValueInternal", "redactSecrets", "isSensitiveFieldName", "redactSensitiveValue", "isDeepStrictEqual", "redactToolCallForPersistence", "redactBrowserToolCall", "redactBrowserToolArguments"]);
 const methods: Readonly<Record<string, readonly string[]>> = {
-  message: ["map", "every"], messages: ["map"], value: ["map", "replace", "slice"], normalized: ["endsWith"],
+  JSON: ["parse", "stringify"], json: ["replace"], message: ["map", "every"], messages: ["map"], value: ["map", "replace", "slice"], normalized: ["endsWith"],
   ancestors: ["has", "add", "delete"], Array: ["isArray"],
   Object: ["entries", "fromEntries", "map"],
   beginPattern: ["exec"], endPattern: ["exec"], legacyQuotedPattern: ["exec"], completeQuotedPattern: ["exec"],
@@ -53,7 +53,7 @@ function select(relative: string, names: readonly string[]): string {
       if (ts.isIdentifier(node)) assert.ok(!["process", "globalThis", "require", "eval", "Function", "fetch", "constructor", "__proto__", "prototype"].includes(node.text));
       if (ts.isRegularExpressionLiteral(node)) {
         regexCount++;
-        assert.ok(name === "redactSecrets" || name === "isSensitiveFieldName", "regex literals only in actual pure redactors");
+        assert.ok(name === "redactSecrets" || name === "isSensitiveFieldName" || name === "matchesWireArguments", "regex literals only in actual pure redactors");
       }
       if (ts.isNewExpression(node)) assert.ok(ts.isIdentifier(node.expression)
         && node.expression.text === "WeakSet" && name === "redactSensitiveValue", "only reviewed WeakSet constructor");
@@ -72,14 +72,14 @@ function select(relative: string, names: readonly string[]): string {
       ts.forEachChild(node, audit);
     }
     audit(declaration);
-    assert.equal(regexCount, name === "redactSecrets" ? 8 : name === "isSensitiveFieldName" ? 1 : 0);
+    assert.equal(regexCount, name === "redactSecrets" ? 8 : name === "isSensitiveFieldName" || name === "matchesWireArguments" ? 1 : 0);
     return declaration.getText(source).replace(/^export\s+/u, "");
   }).join("\n");
 }
 const selected = [
   select("src/utils/redaction.ts", ["redactSecrets"]),
   select("src/utils/secrets.ts", ["redactSensitiveValue", "redactSensitiveValueInternal", "isSensitiveFieldName"]),
-  select("src/session/toolCallPersistence.ts", ["redactToolCallForPersistence", "projectCheckpointToolMetadata"]),
+  select("src/session/toolCallPersistence.ts", ["matchesWireArguments", "redactToolCallForPersistence", "projectCheckpointToolMetadata"]),
   select("src/session/toolArgumentRedaction.ts", ["redactBrowserToolArguments", "redactBrowserToolCall"]),
   select("src/session/recorder.ts", ["redactAgentMessage"]),
   select("src/session/turnStore.ts", ["isAgentMessage", "isUserContent", "isToolResultContent"]),
@@ -94,6 +94,7 @@ interface Part {
   name?: string;
   arguments?: Record<string, unknown>;
   invalid?: boolean;
+  geminiArgumentsJson?: string;
   text?: string;
   providerMetadata?: Record<string, unknown>;
 }
@@ -325,4 +326,21 @@ test("TurnStore save statically wires payload.messages to the pure projection", 
   const bindings = imports[0]!.importClause?.namedBindings;
   assert.ok(bindings && ts.isNamedImports(bindings));
   assert.ok(bindings.elements.some(item => item.name.text === "projectCheckpointToolMetadata" && !item.propertyName));
+});
+
+test("Gemini signed argument text follows browser and credential redaction", () => {
+  for (const [name, args, raw] of [
+    ["Inspect", { password: "fixture-value" }, '{ "password": "fixture-value" }'],
+    ["BrowserClipboardWrite", { text: "fixture-value" }, '{ "text": "fixture-value" }'],
+    ["Inspect", { path: "safe" }, '{"path":{"password":"fixture-value"},"path":"safe"}']
+  ] as const) {
+    const input = history(call(args, { name, geminiArgumentsJson: raw, providerMetadata: metadata }));
+    const part = redact(input).output[0]!.content[0]!;
+    assert.ok(!Object.hasOwn(part, "geminiArgumentsJson"));
+    assert.ok(!Object.hasOwn(part, "providerMetadata"));
+    assert.doesNotMatch(JSON.stringify(part), /fixture-value/u);
+    const checkpoint = invoke<Message[]>("return JSON.stringify(projectCheckpointToolMetadata(input.map(message => message.role === 'assistant' ? {...message, content: message.content.map(redactBrowserToolCall)} : message)));", input);
+    assert.ok(!Object.hasOwn(checkpoint[0]!.content[0]!, "geminiArgumentsJson"));
+    assert.ok(!Object.hasOwn(checkpoint[0]!.content[0]!, "providerMetadata"));
+  }
 });

@@ -134,14 +134,14 @@ test("real SDK compatible-provider streams retain final usage from both manual s
     f.model.vercelModel = createVercelLanguageModel({
       providerAlias: "usage-fixture", providerType: "deepseek", authMode: "api-key", api: "chat_completions",
       modelId: "fixture", supportsReasoning: true, baseUrl: "https://fixture.invalid/v1", apiKey: "fixture", headers: {},
-      fetcher: async () => {
+      fetcher: async (_url, init) => {
         const usage = [first, second][calls++];
         assert.ok(usage, "exactly one bounded repair is allowed");
         const wire = { prompt_tokens: usage.inputTokens, completion_tokens: usage.outputTokens, total_tokens: usage.totalTokens,
           prompt_tokens_details: { cached_tokens: usage.cacheReadTokens }, prompt_cache_hit_tokens: usage.cacheReadTokens,
           prompt_cache_miss_tokens: usage.cacheMissTokens };
         const chunks = [
-          { choices: [{ index: 0, delta: { content: checkpointText() }, finish_reason: null }] },
+          { choices: [{ index: 0, delta: { content: checkpointText(String(init?.body).match(/\[source (m\d+) kind=message role=user\]/u)?.[1]) }, finish_reason: null }] },
           { choices: [], usage: { ...wire, prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
           { choices: [{ index: 0, delta: {}, finish_reason: calls === 1 ? "length" : "stop" }], usage: wire }
         ];
@@ -185,7 +185,7 @@ async function fixture(responses: Attempt[]) {
       if (summary) await f.beforeAttempt?.(f.attempts);
       if (response.error) throw response.error;
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
-        yield { type: "text-delta", text: response.text ?? checkpointText() };
+        yield { type: "text-delta", text: response.text ?? checkpointText(JSON.stringify(context.messages).match(/\[source (m\d+) kind=message role=user\]/u)?.[1]) };
         yield { type: "finish", reason: response.reason ?? "stop", usage: response.usage };
       })();
     }
@@ -213,13 +213,13 @@ async function fixture(responses: Attempt[]) {
   return f;
 }
 
-function checkpointText(): string {
+function checkpointText(source = "m0"): string {
   return [
-    "## Goal", "- Preserve the request. <!-- evidence:m0 -->",
+    "## Goal", `- Preserve the request. <!-- evidence:${source} -->`,
     "## Constraints & Preferences", "- (none recorded)",
     "## Progress", "### Done", "- (none verified)", "### In Progress", "- (none recorded)", "### Blocked", "- (unknown)",
     "## Key Decisions", "- (none recorded)", "## Errors & Fixes", "- (none recorded)",
-    "## All User Messages", "- Preserve the request. <!-- evidence:m0 -->",
+    "## All User Messages", `- Preserve the request. <!-- evidence:${source} -->`,
     "## Next Steps", "- (none recorded)", "## Critical Context", "- (none recorded)"
   ].join("\n");
 }

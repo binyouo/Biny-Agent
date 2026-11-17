@@ -30,9 +30,8 @@ for (const command of ["biny memory search", "biny memory add", "biny history se
 assert.doesNotMatch(bundle.systemPrompt, /recall_memory|save_memory|search_history|skill_lookup|skill_search|skill_install/u);
 assert.match(bundle.systemPrompt, /save it as a reusable Skill/u);
 assert.doesNotMatch(bundle.systemPrompt, /private daily note|private activity|Current emotion/u);
-assert.ok(bundle.turnContext.includes("<biny_reminder>Authoritative Local DateTime:"));
-assert.ok(bundle.turnContext.indexOf("<biny_reminder>") < bundle.turnContext.indexOf("<!-- biny-emotion:start -->"));
-assert.ok(bundle.turnContext.indexOf("<biny_reminder>") < bundle.turnContext.indexOf("private daily note"));
+assert.match(bundle.dateContext ?? "", /Authoritative local date:/u);
+assert.doesNotMatch(bundle.turnContext, /Authoritative Local DateTime|biny_date_context/u);
 assert.doesNotMatch(bundle.turnContext, /biny-activity|Activity Recorder/u, "每轮不再被动注入 Activity");
 
 const relevantBundle = buildPromptBundle({
@@ -62,11 +61,13 @@ const messages: AgentMessage[] = [{
   originalContent: "canonical user text",
   content: `${withExternal.turnContext}\n\n<!-- biny-recalled-memory:start -->\nprivate recalled memory\n<!-- biny-recalled-memory:end -->\n\ncanonical user text`
 }];
+const beforeRefresh = structuredClone(messages);
 refreshRuntimeTurnContext(messages, "<biny_emotion mood=\"calm\">New emotion.</biny_emotion>");
-const refreshedText = typeof messages[0]!.content === "string" ? messages[0]!.content : "";
+assert.deepEqual(messages.slice(0, beforeRefresh.length), beforeRefresh);
+const refreshedText = String(messages.at(-1)!.content);
 assert.match(refreshedText, /New emotion/u);
-assert.doesNotMatch(refreshedText, /Current emotion/u);
-assert.match(refreshedText, /untrusted selection|private recalled memory/u);
+assert.doesNotMatch(refreshedText, /Current emotion\./u);
+assert.match(String(messages[0]!.content), /untrusted selection|private recalled memory/u);
 
 const durable = stripTransientTurnContext(messages);
 assert.equal(durable[0]!.content, "canonical user text");

@@ -14,7 +14,7 @@ import { providerDefinition } from "../ai/provider.js";
 import type { ModelCatalogEntry, ProviderDefinition } from "../ai/types.js";
 import type { AgentConfig, ModelAliasConfig, ModelApiBackend, ModelCompatibility, ModelProfile, ProviderConfig, ThinkingLevelMap } from "../config/schema.js";
 import { resolveNativePatchProtocol } from "../tools/file/editingMode.js";
-import { createVercelLanguageModel } from "./vercelModel.js";
+import { createVercelLanguageModel, vercelWireProtocol } from "./vercelModel.js";
 import { resolveProviderRequestRoute } from "./providerRequest.js";
 import { openAiCodexHeaders, refreshSubscriptionOAuthTokens, SubscriptionOAuthRefreshError } from "./subscriptionAuth.js";
 import { AiRegistry } from "./AiRegistry.js";
@@ -328,6 +328,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       privacy: { settings: agentConfig.redaction }
     });
     const executable: AgentModel = {
+      wireProtocol: vercelWireProtocol({ api, providerType: this.config.type }),
       provider: this.config.type,
       providerAlias: this.id,
       modelId: normalizedModel.model,

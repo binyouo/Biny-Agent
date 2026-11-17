@@ -71,6 +71,16 @@ export function recoveryMaterializationPlan(
   for (const message of replay.messages) if (message.role === "assistant") {
     for (const part of message.content) if (part.type === "toolCall") projectedCallCounts.set(part.id, (projectedCallCounts.get(part.id) ?? 0) + 1);
   }
+  // The last canonical user/assistant boundary excludes every earlier call.
+  // Compute it once instead of copying each historical message suffix.
+  let lastCanonicalBoundary = -1;
+  for (let index = replay.messages.length - 1; index >= 0; index -= 1) {
+    const message = replay.messages[index]!;
+    if (replay.messageReferences[index]?.id && (message.role === "assistant" || message.role === "user")) {
+      lastCanonicalBoundary = index;
+      break;
+    }
+  }
   const messages: RecoveryMaterializationPlan["messages"] = [];
   for (let index = 0; index < replay.messages.length; index += 1) {
     const message = replay.messages[index]!;
@@ -80,8 +90,7 @@ export function recoveryMaterializationPlan(
     const ids = new Set(parts.map(part => part.id));
     // A later canonical assistant/user is already a committed boundary. Never retrofit
     // old gaps behind it; only the unfinished suffix can be extended by new ancestors.
-    if (replay.messages.slice(index + 1).some((later, offset) => replay.messageReferences[index + 1 + offset]?.id
-      && (later.role === "assistant" || later.role === "user"))) continue;
+    if (index < lastCanonicalBoundary) continue;
     const pairedResults = replay.messages.slice(index + 1).filter((item): item is Extract<AgentMessage, { role: "toolResult" }> =>
       item.role === "toolResult" && ids.has(item.toolCallId));
     if (pairedResults.length !== parts.length || new Set(pairedResults.map(item => item.toolCallId)).size !== parts.length) continue;

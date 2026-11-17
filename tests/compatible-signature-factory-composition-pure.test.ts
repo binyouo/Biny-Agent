@@ -24,7 +24,10 @@ function declarations(file: string, names: readonly string[]): string {
     return node.getText(source).replace(/^export /u, "");
   }).join("\n");
 }
-const factoryCode = declarations(path.join(factoryRoot, "src/llm/vercelModel.ts"), ["createVercelLanguageModel"]);
+const factoryFile = path.join(factoryRoot, "src/llm/vercelModel.ts");
+const createModel = declarations(factoryFile, ["createVercelLanguageModel"]);
+const factoryCode = /\bvercelWireProtocol\s*\(/u.test(createModel)
+  ? declarations(factoryFile, ["vercelWireProtocol"]) + "\n" + createModel : createModel;
 const signatureCode = declarations(path.join(root, "src/llm/compatibleToolMetadata.ts"), ["withCompatibleToolMetadata", "projectCompatibleToolMetadata"]);
 function evaluate<T>(code: string, bindings: Record<string, unknown>): T {
   const emitted = ts.transpileModule(code, {
