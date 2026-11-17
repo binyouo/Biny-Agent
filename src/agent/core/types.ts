@@ -39,6 +39,10 @@ export interface AgentUserMessage {
   content: string | Array<AgentTextContent | AgentImageContent | AgentAudioContent>;
   /** 仅宿主注入瞬态上下文时保存原文；清理和遥测不能靠用户可输入的文本标记识别来源。 */
   originalContent?: AgentUserMessage["content"];
+  /** 宿主追加的日期上下文；不能从用户可输入的正文标记推断。 */
+  runtimeDateContext?: true;
+  /** 宿主状态快照，随模型历史保留，不作为用户输入或回合边界。 */
+  runtimeContext?: string;
   /** 这一轮实际用于表达的心境，随消息恢复，不替代用户原文。 */
   emotionSnapshot?: string;
   /** 原始消息发送时间及当时记录的时区；独立于本轮当前时间和正文中的事件时间。 */
@@ -62,6 +66,8 @@ export interface AgentToolResultMessage {
   toolName: string;
   content: AgentToolResultContent[];
   details?: unknown;
+  /** 已发送的有界模型投影；原始工具事实保留在 content/details。 */
+  requestSnapshot?: { content: AgentToolResultContent[]; details?: unknown };
   isError?: boolean;
   timestamp?: number;
 }

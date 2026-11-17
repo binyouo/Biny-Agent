@@ -174,6 +174,7 @@ function fixture(scenario: Scenario, operation = "agent turn", firstFinish = "le
     cloneDraftClaimEvidence: (value: unknown) => value,
     compactionPromptVersion: 4,
     projectMessageSentAt,
+    appendCurrentContext: async () => undefined,
     toModelMessages: (messages: unknown[]) => messages
   }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as Extracted;
   const memory = Object.assign(Object.create(extracted.memory) as Memory, {

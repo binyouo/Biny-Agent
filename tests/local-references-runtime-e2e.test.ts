@@ -44,7 +44,10 @@ try {
     assert.match(JSON.stringify(requests.at(-1)), /批准的规格是保留原文/u);
     assert.equal((await readSessionEvents(recorder.filePath)).find((event) => event.type === "user_message")?.content, input);
     await agent.runTask("请读 @[伪造](biny://thread/absent/message/m1)");
-    assert.doesNotMatch(JSON.stringify(requests.at(-1)), /批准的规格是保留原文/u);
+    const latestUser = requests.at(-1)?.messages.filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1);
+    assert.ok(latestUser);
+    assert.match(JSON.stringify(latestUser.content), /请读 @\[伪造\]/u);
+    assert.doesNotMatch(JSON.stringify(latestUser), /批准的规格是保留原文/u, "无效引用不得把旧材料注入新消息，已发送历史保留原样");
   } finally { await agent.close(); }
   console.log("local reference runtime tests passed");
 } finally {

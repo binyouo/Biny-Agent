@@ -77,7 +77,7 @@ for (const scenario of ["complete", "edited", "unknown-budget", "code-mode", "cr
     provider: "test", modelId: "goal-controls", supportsTools: true,
     async stream(context) {
       calls += 1;
-      requestGoals.push(context.systemPrompt ?? "");
+      requestGoals.push(`${context.systemPrompt ?? ""}\n${JSON.stringify(context.messages)}`);
       if (scenario === "edited" && calls === 1) goals.set(sessionId, "Deliver all four artifacts with fresh acceptance evidence");
       if (scenario === "created-mid-turn" && calls === 1) goals.set(sessionId, "A new durable goal created during this turn");
       return (async function* () {
@@ -159,9 +159,10 @@ for (const scenario of ["complete", "edited", "unknown-budget", "code-mode", "cr
     async stream(context) {
       const compacting = context.tools.length === 0;
       if (compacting) summaries += 1;
-      else mainPrompts.push(context.systemPrompt ?? "");
+      else mainPrompts.push(`${context.systemPrompt ?? ""}\n${JSON.stringify(context.messages)}`);
       return (async function* () {
-        yield { type: "text-delta" as const, text: compacting ? summary : "Current checkpoint. ".repeat(100) };
+        const source = JSON.stringify(context.messages).match(/\[source (m\d+) kind=message role=user\]/u)?.[1] ?? "m0";
+        yield { type: "text-delta" as const, text: compacting ? summary.replaceAll("evidence:m0", `evidence:${source}`) : "Current checkpoint. ".repeat(100) };
         yield { type: "finish" as const, reason: "stop" as const, usage: { inputTokens: compacting ? 6 : 10, cacheReadTokens: compacting ? 2 : 4, outputTokens: compacting ? 1 : 2 } };
       })();
     }

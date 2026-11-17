@@ -126,7 +126,8 @@ for (const executionMode of ["direct", "code_mode"] as const) {
           const output = JSON.stringify(body.messages.findLast((message: { role: string }) => message.role === "tool"));
           assert.match(output, /Finish CLI management/u);
           assert.doesNotMatch(output, /Session is busy|isError.*true|error:/iu);
-          assert.match(JSON.stringify(body.messages.filter((message: { role: string }) => message.role === "system")), /Finish CLI management/u);
+          assert.match(JSON.stringify(body.messages.filter((message: { role: string; content: unknown }) => message.role === "user" && JSON.stringify(message.content).includes("Current todo context;"))), /Finish CLI management/u);
+          assert.doesNotMatch(JSON.stringify(body.messages.filter((message: { role: string }) => message.role === "system")), /Finish CLI management/u);
           delta = { content: "done" };
         }
       }

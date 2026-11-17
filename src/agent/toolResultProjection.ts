@@ -2,10 +2,11 @@
  * 工具结果的模型侧投影。
  *
  * 工具结果在 session、实时事件和模型上下文里承担不同职责：session 要保留事实，模型只
- * 需要下一步决策所需的证据。本模块只复制消息并生成投影视图，绝不改写调用方持有的原始
- * 消息；需要丢掉正文时通过注入的归档回调保存完整结果。
+ * 需要下一步决策所需的证据。本模块保留原始正文与事实，另外记录已发送的投影视图；
+ * 需要丢掉投影正文时通过注入的归档回调保存完整结果。
  */
 import { createHash } from "node:crypto";
+import { isRuntimeContext } from "./context/runtimeContext.js";
 import { commandStreamFields } from "./commandStreamFields.js";
 import type {
   AgentAssistantMessage,
@@ -132,12 +133,29 @@ export async function projectSingleToolResultForModel(
   });
 }
 
-/**
- * 为下一次模型请求生成工具结果视图。
- *
- * 语义替代只在当前用户消息之后发生，并且不同 assistant step 之间才生效；同一 step 的
- * 并行工具结果不会相互覆盖。未知工具没有可证明的语义关系，只做完全重复去重。
- */
+/** 首次发送前固定精简结果；仅达到总体字节预算时重建旧投影。 */
+export async function projectStableToolResultsForModel(messages: AgentMessage[], options: ToolResultProjectionOptions = {}): Promise<AgentMessage[]> {
+  // 投影视图不携带旧快照，否则后续预算计算会忽略本轮裁剪后的正文。
+  let projected: AgentMessage[] = messages.map(message => message.role === "toolResult"
+    ? { ...message, ...message.requestSnapshot, requestSnapshot: undefined } : message);
+  if (messages.some(message => message.role === "toolResult" && !message.requestSnapshot)) {
+    const candidates = await projectToolResultsForModel(projected, { ...options, keepRecentResults: 0, maxRetainedBytes: undefined });
+    projected = projected.map((message, index) => message.role === "toolResult" && messages[index]?.role === "toolResult" && !messages[index].requestSnapshot ? candidates[index]! : message);
+  }
+  const bytes = projected.reduce((sum, message) => sum + (message.role === "toolResult" ? Buffer.byteLength(JSON.stringify(message.content), "utf8") : 0), 0);
+  if (options.maxRetainedBytes !== undefined && bytes > options.maxRetainedBytes) {
+    projected = await projectToolResultsForModel(projected, options);
+  }
+  for (const [index, message] of messages.entries()) {
+    const view = projected[index];
+    if (message.role === "toolResult" && view?.role === "toolResult") {
+      message.requestSnapshot = { content: view.content, details: view.details };
+    }
+  }
+  return projected;
+}
+
+/** 同一用户回合内按语义替代结果；同一步并行结果不会相互覆盖。 */
 export async function projectToolResultsForModel(
   messages: AgentMessage[],
   options: ToolResultProjectionOptions = {}
@@ -221,7 +239,7 @@ function collectToolResults(messages: AgentMessage[]): ToolResultEntry[] {
   let latestUserIndex = -1;
   for (const [index, message] of messages.entries()) {
     if (message.role === "user") {
-      latestUserIndex = index;
+      if (!isRuntimeContext(message)) latestUserIndex = index;
       continue;
     }
     if (message.role === "assistant") {

@@ -32,7 +32,7 @@ try {
   assert.doesNotMatch(context ?? "", /过期项目|起点已过期的长会话|OCR_SECRET_731/u);
   const bundle = buildPromptBundle({ cwd: root, now, activityGreetingPrompt: context });
   assert.match(bundle.turnContext, /星河项目/u);
-  assert.match(bundle.systemPrompt, /1–2 sentences|1-2 sentences/u);
+  assert.match(bundle.turnContext, /1–2 sentences|1-2 sentences/u);
   assert.doesNotMatch(bundle.systemPrompt, /星河项目/u);
 
   const nearBoundary = store.startSession("2026-09-22T10:00:00.000Z");

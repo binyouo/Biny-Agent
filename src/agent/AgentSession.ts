@@ -1,3 +1,4 @@
+import { isRuntimeContext, appendRuntimeContext } from "./context/runtimeContext.js";
 import { createVisionProjection } from "./context/visionProjection.js";
 import { boundComputerFrames } from "../computer/modelFrames.js";
 import { SelfieAlbum, selfiePrompt } from "./context/selfie.js";
@@ -74,9 +75,10 @@ import {
   buildPromptBundle,
   type PromptBundle,
   refreshRuntimeTurnContext,
-  refreshRuntimeDateContext,
+  appendRuntimeDateContext,
   refreshRuntimeSystemPrompt,
-  refreshSessionGoalPrompt,
+  appendSessionGoalContext,
+  runtimeToolContext,
   messagesForTelemetry,
   systemPromptForTelemetry
 } from "./prompts.js";
@@ -104,7 +106,7 @@ import { SoulStorage } from "./context/soulStorage.js";
 import { readSecurityPolicy } from "./context/securityPolicy.js";
 import { EmotionStorage } from "./context/emotionStorage.js";
 import { renderEmotionPrompt } from "./context/emotionPrompt.js";
-import { retainEmotionHistory, withEmotionHistory } from "./context/emotionHistory.js";
+import { retainEmotionHistory, withEmotionHistory, emotionSnapshotFromPrompt } from "./context/emotionHistory.js";
 import {
   analyzeContextEmotion,
   EmotionAnalysisScheduler,
@@ -146,7 +148,7 @@ import { attachmentFilePath, attachmentMessageParts, readAttachmentFromRoot, typ
 import type { AttachmentReference } from "../attachments/store.js";
 import { messageText, withMessageSentAt, withReferencedMessageSentAt } from "./modelMessages.js";
 import { PluginLifecycleRegistry, type PluginMcpToolCaller, type PluginTurnMessage } from "../extensions/pluginLifecycle.js";
-import { projectToolResultsForModel } from "./toolResultProjection.js";
+import { projectStableToolResultsForModel } from "./toolResultProjection.js";
 import { archiveToolResult } from "../session/toolResultArchive.js";
 import { TodoStore } from "../session/todoStore.js";
 import type { SessionGoalExpectation, SessionGoalStore } from "../runtime/SessionGoalStore.js";
@@ -174,7 +176,7 @@ import type {
   MemorySimilarityScan
 } from "./context/memoryTypes.js";
 import { resolvedCapabilitySelectionSchema, capabilitySelectionValueSchema, resolveCapabilityNames, completeToolSelection, type AgentCapabilitySelection } from "./capabilitySelection.js";
-import { getToolExposure, isToolModelVisible, isToolModelVisibleInMode } from "../tools/exposure.js";
+import { getToolExposure, isToolModelVisibleInMode } from "../tools/exposure.js";
 import { checkpointClaims } from "../session/checkpointClaims.js";
 import type { CheckpointEvidenceArgs } from "../extensions/checkpointEvidence.js";
 import type { CapabilityPreselectionInput } from "./capabilityPreselection.js";
@@ -339,6 +341,7 @@ export interface ResumedAgentSession extends SessionReplay {
 }
 
 interface TurnArgs {
+  preparedHistoryMessageCount?: number;
   input: string;
   systemPrompt?: string;
   messages: AgentMessage[];
@@ -666,8 +669,7 @@ export class AgentSession {
     const sections = [
       selectedSkillPrompt?.trim(),
       this.options.subagentPrompt?.trim(),
-      this.options.mcpPrompt?.().trim(),
-      (this.options.todoStore?.promptSection() ?? this.options.todoPrompt?.())?.trim()
+      this.options.mcpPrompt?.().trim()
     ].filter(Boolean);
     return {
       prompt: sections.length ? sections.join("\n\n") : undefined,
@@ -770,13 +772,6 @@ export class AgentSession {
     }
   }
 
-  /** 只把当前模型步骤真正可见的工具元数据交给提示词构建器。 */
-  private promptTools(toolNames?: readonly string[]) {
-    if (!toolNames) return this.options.toolRegistry.list().filter(isToolModelVisible);
-    const active = new Set(toolNames);
-    return this.options.toolRegistry.list().filter((tool) => active.has(tool.name) && isToolModelVisible(tool));
-  }
-
   /** 重新生成也要使用和普通回合相同的稳定系统提示词，只替换消息上下文。 */
   private async baseSystemPrompt(
     input: string,
@@ -804,8 +799,6 @@ export class AgentSession {
     const selection = selectionResult.value;
     const [identityPrompt, securityPrompt, soulSnapshot, parentThreadPrompt, emotionPrompt, dailyNotesPrompt, activityContextPrompt] = contextResult.value;
     signal?.throwIfAborted();
-    const selectedToolNames = this.selectedToolNames(selection);
-    const initialTools = this.promptTools(selectedToolNames ? [...selectedToolNames] : undefined);
     const soulPrompt = soulSnapshot.source === "user"
       ? renderSoulPrompt(soulSnapshot.content, soulSnapshot.source, soulSnapshot.path)
       : undefined;
@@ -813,7 +806,6 @@ export class AgentSession {
     const bundle = buildPromptBundle({
       sessionId: this.recorder.sessionId,
       extensionPrompt: extensions.prompt,
-      tools: initialTools,
       soulPrompt,
       personalization,
       securityPrompt,
@@ -1138,7 +1130,11 @@ export class AgentSession {
         ? replayIndexes.map((index) => replay.messageReferences[index])
         : turn.messages.map(() => undefined);
       let recoveryUserIndex = recoveredMessages.length - 1;
-      while (recoveryUserIndex >= 0 && recoveredMessages[recoveryUserIndex]?.role !== "user") recoveryUserIndex -= 1;
+      while (recoveryUserIndex >= 0) {
+        const message = recoveredMessages[recoveryUserIndex];
+        if (message?.role === "user" && !isRuntimeContext(message)) break;
+        recoveryUserIndex -= 1;
+      }
       const recoveryUserId = recoveredReferences[recoveryUserIndex]?.id;
       if (admissionRecoveryInputConflict(turn, replay.events, recoveryUserId)) {
         const message = "Cannot safely continue: the selected conversation would resume a different user message from the one admitted by this checkpoint.";
@@ -1653,8 +1649,11 @@ export class AgentSession {
     options.capabilitySelection = await selection;
     yield { type: "preparation.updated", stage: "waiting" };
     yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: options.capabilitySelection, loadedSkills: prepared.loadedSkills ?? [] } };
-    const preparedHistoryCount = Math.max(0, prepared.messages.length - 1);
-    const preparedHistoryReferences = preparedHistoryCount ? this.contextMessageReferences.slice(-preparedHistoryCount) : [];
+    const preparedHistoryCount = prepared.historyMessageCount;
+    const preparedHistoryReferences = [
+      ...(preparedHistoryCount ? this.contextMessageReferences.slice(-preparedHistoryCount) : []),
+      ...Array.from({ length: prepared.messages.length - preparedHistoryCount - 1 }, () => undefined)
+    ];
     const continuationMessages = [...prepared.messages];
     const continuationReferences = [...preparedHistoryReferences, replay.messageReferences[userReferenceIndex]];
     let preparedUser = continuationMessages.at(-1);
@@ -2290,6 +2289,7 @@ export class AgentSession {
       yield doneEvent(outcome);
       return;
     }
+    let preparedHistoryMessageCount: number | undefined;
     let systemPrompt: string | undefined;
     let messages: AgentMessage[];
     let messageReferences: Array<SessionMessageReference | undefined>;
@@ -2406,13 +2406,15 @@ export class AgentSession {
       yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: runOptions.capabilitySelection, loadedSkills: prepared.loadedSkills ?? [] } };
       systemPrompt = prepared.systemPrompt;
       messages = prepared.messages;
+      preparedHistoryMessageCount = prepared.historyMessageCount;
       const currentUser = messages.at(-1);
       if (!runOptions.emptyTurn && currentUser?.role === "user") {
         messages[messages.length - 1] = withReferencedMessageSentAt(currentUser, events, userMessageReference?.id);
       }
-      const selectedHistoryCount = runOptions.emptyTurn ? messages.length : Math.max(0, messages.length - 1);
+      const selectedHistoryCount = prepared.historyMessageCount;
       messageReferences = [
         ...(selectedHistoryCount ? this.contextMessageReferences.slice(-selectedHistoryCount) : []),
+        ...Array.from({ length: messages.length - selectedHistoryCount - (runOptions.emptyTurn ? 0 : 1) }, () => undefined),
         ...(runOptions.emptyTurn ? [] : [userMessageReference])
       ];
     } catch (error) {
@@ -2449,9 +2451,6 @@ export class AgentSession {
       yield { type: "status", status: "cancelled" };
       yield doneEvent(outcome);
       return;
-    }
-    if (runOptions.continueFrom?.length || runOptions.emptyTurn) {
-      systemPrompt = refreshRuntimeDateContext(systemPrompt, messages, new Date());
     }
     if (!continuing) {
       try {
@@ -2503,6 +2502,7 @@ export class AgentSession {
     };
     recordPerfPhase("turn.prepareTotal", turnPerfStartedAt, { runId: runtimeRunId }, this.options.workspaceRoot);
     yield* this.runTurnLoop({
+      preparedHistoryMessageCount,
       input,
       systemPrompt,
       messages,
@@ -2697,7 +2697,6 @@ export class AgentSession {
       if (goal?.status === "active") this.runSessionGoalId = goal.goalId;
       this.sessionGoalRequest = goal?.status === "active" && runOptions.runId !== undefined
         ? { goalId: goal.goalId, revision: goal.revision, generation: goal.generation, runId: runOptions.runId } : undefined;
-      activeRequestContext.systemPrompt = refreshSessionGoalPrompt(activeRequestContext.systemPrompt, goal);
       return {
         sessionId: this.recorder.sessionId,
         runId: args.runOptions.runId,
@@ -2869,9 +2868,12 @@ export class AgentSession {
     }
     const savedEmotionSnapshots = new Map<string, string>();
     const refreshEmotion = async (currentMessages: AgentMessage[]): Promise<void> => {
-      const message = refreshRuntimeTurnContext(currentMessages, await this.currentEmotionPrompt());
+      const prompt = await this.currentEmotionPrompt();
+      refreshRuntimeTurnContext(currentMessages, prompt);
+      const message = [...currentMessages].reverse().find(item => item.role === "user" && !isRuntimeContext(item));
       const messageId = message && referenceByMessage.get(message)?.id;
-      const snapshot = message?.emotionSnapshot;
+      const snapshot = prompt ? emotionSnapshotFromPrompt(prompt) : undefined;
+      if (message?.role === "user" && snapshot) message.emotionSnapshot = snapshot;
       if (!messageId || !snapshot || savedEmotionSnapshots.get(messageId) === snapshot) return;
       await this.recorder.recordAndFlush({ type: "message_metadata", messageId, metadata: { emotionSnapshot: snapshot } });
       savedEmotionSnapshots.set(messageId, snapshot);
@@ -2879,10 +2881,7 @@ export class AgentSession {
     let loopContext: AgentContext;
     try {
       const initialTools = editingTools(activeModelSettings);
-      systemPrompt = refreshRuntimeSystemPrompt(
-        systemPrompt,
-        initialTools
-      );
+      systemPrompt = refreshRuntimeSystemPrompt(systemPrompt);
       await refreshEmotion(messages);
       loopContext = { systemPrompt, messages: [...messages], tools: initialTools };
       // schema 在首轮 provider 请求与任何 tool.started 之前统一规范化并校验。
@@ -2900,7 +2899,6 @@ export class AgentSession {
     let lastAssistant: AgentAssistantMessage | undefined;
     let notification: string | undefined;
     let finalAssistantReference: SessionMessageReference | undefined;
-    let newMessages: AgentMessage[] = [];
     let finalContextMessages: AgentMessage[] = [...messages];
     const retryReply: { state:
       | { phase: "empty" }
@@ -2971,7 +2969,7 @@ export class AgentSession {
       await this.recorder.commitRetryReply({ ...commit, stage: "terminal" });
       retryReply.state = { phase: "committed" };
     };
-    const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
+    const lastUserMessage = [...messages].reverse().find((message) => message.role === "user" && !isRuntimeContext(message));
     const lastUserMessageReference = lastUserMessage === undefined ? undefined : referenceByMessage.get(lastUserMessage);
     const loopPerfStartedAt = perfNow();
     let reasoningActive = false;
@@ -2997,6 +2995,7 @@ export class AgentSession {
       reason: "threshold" | "overflow"
     ): Promise<void> => {
       const sourceReferences = context.messages.map((message) => referenceByMessage.get(message));
+      const workspaceSnapshot = [...context.messages].reverse().find(message => message.role === "user" && message.runtimeContext === "workspace");
       await this.persistContextCheckpoint(compacted, reason, sourceReferences);
       const retainedReferences = sourceReferences.slice(compacted.compactedMessageCount);
       for (const [index, message] of compacted.messages.entries()) {
@@ -3004,9 +3003,17 @@ export class AgentSession {
         if (reference) referenceByMessage.set(message, reference);
       }
       context.messages.splice(0, context.messages.length, ...compacted.messages);
+      if (workspaceSnapshot && !context.messages.some(message => message.role === "user" && message.runtimeContext === "workspace")) context.messages.push(workspaceSnapshot);
       runContextCompacted = true;
     };
     let activeRequestContext = loopContext;
+    const appendCurrentContext = async (current: AgentMessage[]): Promise<void> => {
+      appendRuntimeDateContext(current, new Date());
+      appendRuntimeContext(current, "tools", runtimeToolContext(activeRequestContext.tools));
+      appendRuntimeContext(current, "todo", (this.options.todoStore?.promptSection() ?? this.options.todoPrompt?.())?.trim() ?? "");
+      appendSessionGoalContext(current, this.options.sessionGoals?.get(this.recorder.sessionId));
+      await refreshEmotion(current);
+    };
     const visionAlias = this.activeConfig.visionModelEnabled === false ? undefined : this.activeConfig.visionModel;
     const projectVision = visionAlias ? createVisionProjection({
       getModel: () => {
@@ -3022,7 +3029,7 @@ export class AgentSession {
       onUsage: usage => { this.recordModelUsage(usage, "vision", visionAlias); }
     }) : undefined;
     const projectForModelRequest = async (contextMessages: AgentMessage[]): Promise<AgentMessage[]> => {
-      const projectedMessages = await projectToolResultsForModel(contextMessages, {
+      const projectedMessages = await projectStableToolResultsForModel(contextMessages, {
         maxRetainedBytes: this.activeConfig.context.maxTurnToolResultBytes,
         archiveResult: async ({ message, result, output, sequence }) => await archiveToolResult({
           workspaceRoot: this.options.workspaceRoot,
@@ -3035,6 +3042,10 @@ export class AgentSession {
         })
       });
       const pruned = boundComputerFrames(this.contextMemory.pruneToolResultsForStep(projectedMessages));
+      for (const [index, original] of contextMessages.entries()) {
+        const view = pruned[index];
+        if (original.role === "toolResult" && view?.role === "toolResult") original.requestSnapshot = { content: view.content, details: view.details };
+      }
       return projectVision && activeModelSettings.model.supportsVision !== true ? await projectVision(pruned) : pruned;
     };
 
@@ -3182,15 +3193,7 @@ export class AgentSession {
           activeModelSettings = settings;
           this.contextMemory.observePromptModel(activeModelSettings.model.provider, activeModelSettings.model.modelId);
           const tools = editingTools(settings);
-          context.systemPrompt = refreshRuntimeSystemPrompt(
-            context.systemPrompt,
-            tools
-          );
-          if (this.options.todoStore) {
-            const prompt = context.systemPrompt?.replace(/<!-- biny-todos:start -->[\s\S]*?<!-- biny-todos:end -->/gu, "").trim();
-            context.systemPrompt = [prompt, this.options.todoStore.promptSection()].filter(Boolean).join("\n\n") || undefined;
-          }
-          await refreshEmotion(context.messages);
+          context.systemPrompt = refreshRuntimeSystemPrompt(context.systemPrompt);
           this.contextMemory.recordToolSchema(tools);
           context.tools = [...tools];
           activeRequestContext = context;
@@ -3238,6 +3241,8 @@ export class AgentSession {
           emitUpdate({ type: "context.updated", context: await this.contextStatus() });
         },
         transformContext: async (contextMessages) => {
+          activeRequestContext.messages = contextMessages;
+          await appendCurrentContext(contextMessages);
           let prunedMessages = await projectForModelRequest(contextMessages);
           let requestMessages = this.contextMemory.projectCompactionCheckpoint(prunedMessages);
           const projectedContext: AgentContext = { ...activeRequestContext, messages: requestMessages };
@@ -3255,6 +3260,7 @@ export class AgentSession {
             : undefined;
           if (compacted) {
             await applyRunContextCompaction(activeRequestContext, compacted, "threshold");
+            await appendCurrentContext(activeRequestContext.messages);
             prunedMessages = await projectForModelRequest(activeRequestContext.messages);
             requestMessages = this.contextMemory.projectCompactionCheckpoint(prunedMessages);
           }
@@ -3343,7 +3349,6 @@ export class AgentSession {
                 };
               }
           } else if (event.type === "agent_end") {
-            newMessages = event.messages;
             finalContextMessages = event.contextMessages;
           } else if (event.type === "model_retry") {
             yield {
@@ -3377,21 +3382,17 @@ export class AgentSession {
       yield* pendingEvents.drain();
       if (reasoningActive) yield { type: "reasoning.completed" };
       if (streamFailure) throw new Error(streamFailure);
-      const currentUserMessage = messages.at(-1);
-      const finalMessages = runOptions.continueFrom?.length || contextRecoveryAttempts > 0 || runContextCompacted
-        ? finalContextMessages
-        : [
-          ...this.contextMemory.getHistory(),
-          ...(currentUserMessage ? [currentUserMessage] : []),
-          ...newMessages
-        ];
-      const finalReferences = runOptions.continueFrom?.length || contextRecoveryAttempts > 0 || runContextCompacted
-        ? finalMessages.map((message) => referenceByMessage.get(message))
-        : [
-          ...this.contextMessageReferences,
-          ...(currentUserMessage ? [referenceByMessage.get(currentUserMessage)] : []),
-          ...newMessages.map((message) => referenceByMessage.get(message))
-        ];
+      const preserveUnselected = args.preparedHistoryMessageCount !== undefined && !runContextCompacted && contextRecoveryAttempts === 0;
+      const retainedHistory = preserveUnselected ? this.contextMemory.getHistory() : [];
+      const selectedCount = args.preparedHistoryMessageCount ?? 0;
+      for (let index = 0; index < selectedCount && preserveUnselected; index++) {
+        const prior = retainedHistory[retainedHistory.length - selectedCount + index];
+        const selected = finalContextMessages[index];
+        if (prior?.role === "toolResult" && selected?.role === "toolResult") prior.requestSnapshot = selected.requestSnapshot;
+      }
+      const newContext = preserveUnselected ? finalContextMessages.slice(selectedCount) : finalContextMessages;
+      const finalMessages = [...retainedHistory, ...newContext];
+      const finalReferences = [...(preserveUnselected ? this.contextMessageReferences : []), ...newContext.map(message => referenceByMessage.get(message))];
       this.contextMemory.replaceHistory(retainEmotionHistory(finalMessages));
       this.contextMessageReferences = finalReferences;
       const usageRecord = stepUsageRecords.length ? sumSessionUsage(stepUsageRecords) : undefined;
@@ -4787,7 +4788,7 @@ export class AgentSession {
     const hydrated: AgentMessage[] = [];
     for (const [index, original] of messages.entries()) {
       let message = original;
-      if (message.role !== "user") {
+      if (message.role !== "user" || isRuntimeContext(message)) {
         hydrated.push(message);
         continue;
       }
