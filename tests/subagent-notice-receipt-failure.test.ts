@@ -31,7 +31,7 @@ for (const mode of ["warm", "cold", "batch-warm", "batch-cold", "compacted", "br
       assert.equal(input instanceof Request ? input.url : String(input), "http://notice-fixture.invalid/v1/chat/completions");
       const body = JSON.parse(String(init?.body));
       bodies.push(body);
-      const output = JSON.stringify(body.messages).includes("durable context checkpoint") ? checkpointText() : "Fixture complete";
+      const output = JSON.stringify(body.messages).includes("durable context checkpoint") ? checkpointText(JSON.stringify(body.messages).match(/\[source (m\d+) kind=message role=user\]/u)?.[1]) : "Fixture complete";
       return new Response([{ choices: [{ index: 0, delta: { content: output }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }, "[DONE]"].map(chunk => `data: ${typeof chunk === "string" ? chunk : JSON.stringify(chunk)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
     });
     const config = configSchema.parse({
@@ -144,13 +144,13 @@ for (const mode of ["warm", "cold", "batch-warm", "batch-cold", "compacted", "br
   });
 }
 
-function checkpointText(): string {
+function checkpointText(source = "m0"): string {
   return [
-    "## Goal", "- Preserve the request. <!-- evidence:m0 -->",
+    "## Goal", `- Preserve the request. <!-- evidence:${source} -->`,
     "## Constraints & Preferences", "- (none recorded)",
     "## Progress", "### Done", "- (none verified)", "### In Progress", "- (none recorded)", "### Blocked", "- (unknown)",
     "## Key Decisions", "- (none recorded)", "## Errors & Fixes", "- (none recorded)",
-    "## All User Messages", "- Preserve the request. <!-- evidence:m0 -->",
+    "## All User Messages", `- Preserve the request. <!-- evidence:${source} -->`,
     "## Next Steps", "- (none recorded)", "## Critical Context", "- (none recorded)"
   ].join("\n");
 }

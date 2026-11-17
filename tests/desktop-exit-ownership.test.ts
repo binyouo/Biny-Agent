@@ -27,8 +27,8 @@ const releaseResponses: Array<() => void> = [];
 const provider = createServer(async (request, response) => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
-  const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { messages?: Array<{ content: unknown }> };
-  const content = payload.messages?.at(-1)?.content;
+  const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { messages?: Array<{ role?: string; content: unknown }> };
+  const content = payload.messages?.filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)?.content;
   requestPrompts.push(typeof content === "string" ? content : Array.isArray(content)
     ? content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
     : JSON.stringify(content));

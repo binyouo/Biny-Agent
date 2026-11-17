@@ -141,7 +141,7 @@ for (const scenario of [
     assert.equal(foreground.length, 1, "inspect the initial foreground request, without replay or retry");
     const first = foreground[0]!;
     assert.equal(first, f.requests[0], "the screenshots must reach the first request, before background text work");
-    const users = first.messages.filter(message => message.role === "user");
+    const users = first.messages.filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content)));
     assert.equal(users.length, 1);
     const parts = users[0]!.content;
     assert.ok(Array.isArray(parts));

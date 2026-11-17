@@ -31,10 +31,14 @@ export interface VercelModelInput {
   privacy?: Omit<PrivacyFetchContext, "provider" | "model">;
 }
 
-export function createVercelLanguageModel(input: VercelModelInput): LanguageModelV4 {
-  const protocol = input.api === "anthropic_messages" || input.providerType === "anthropic" || input.providerType === "claude-subscription" ? "anthropic"
+export function vercelWireProtocol(input: Pick<VercelModelInput, "api" | "providerType">) {
+  return input.api === "anthropic_messages" || input.providerType === "anthropic" || input.providerType === "claude-subscription" ? "anthropic"
     : input.api === "google_generative_ai" || input.providerType === "google-native" ? "gemini"
       : input.api === "responses" ? "responses" : "chat";
+}
+
+export function createVercelLanguageModel(input: VercelModelInput): LanguageModelV4 {
+  const protocol = vercelWireProtocol(input);
   // 只对模型推理请求套脱敏；目录、额度、嵌入等请求不经过这里。
   const privacyFetcher = input.privacy
     ? createPrivacyFetch(input.fetcher, {
