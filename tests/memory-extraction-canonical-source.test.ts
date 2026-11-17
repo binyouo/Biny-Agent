@@ -149,7 +149,7 @@ try {
         for (const sentinel of ["LONG_REFERENCE_ONLY_7461", "TODAY_REFERENCE_ONLY_7461", "YESTERDAY_REFERENCE_ONLY_7461"]) {
           assert.ok(foreground[0]!.text.includes(sentinel), `foreground injection must contain ${sentinel}`);
         }
-        const user = foreground[0]!.messages.find((message) => message.role === "user");
+        const user = foreground[0]!.messages.find((message) => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content)));
         assert.ok(user?.role === "user" && typeof user.content === "string" && user.content.endsWith(input));
         const events = await readSessionEvents(recorder.filePath);
         const source = events.find((event) => event.type === "user_message" && !event.auditOnly);

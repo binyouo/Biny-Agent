@@ -21,7 +21,7 @@ export function redactBrowserToolArguments(tool: string, args: unknown): unknown
 export function redactBrowserToolCall(call: AgentToolCallContent): AgentToolCallContent {
   const args = redactBrowserToolArguments(call.name, call.arguments) as Record<string, unknown>;
   if (isDeepStrictEqual(args, call.arguments)) return call;
-  const { providerMetadata: _originalMetadata, ...content } = call;
+  const { providerMetadata: _originalMetadata, geminiArgumentsJson: _originalArguments, ...content } = call;
   return { ...content, arguments: args };
 }
 

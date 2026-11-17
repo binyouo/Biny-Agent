@@ -193,8 +193,8 @@ function testPromptCacheAccounting(): void {
   assert.deepEqual(localPromptCache.stats(), { entries: 1, hits: 1, misses: 1, evictions: 0 });
   canonicalToolSchemaHash([toolA], localPromptCache);
   assert.deepEqual(localPromptCache.stats(), { entries: 1, hits: 1, misses: 2, evictions: 1 });
-  const firstPrompt = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "dynamic-a", tools: [toolB, toolA] });
-  const secondPrompt = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "dynamic-b", tools: [toolA, toolB] });
+  const firstPrompt = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "dynamic-a" });
+  const secondPrompt = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "dynamic-b" });
   assert.notEqual(stableSystemPromptForCache(firstPrompt), stableSystemPromptForCache(secondPrompt));
   const firstShape = computePromptShapeDiagnostic({
     provider: "openai-compatible",

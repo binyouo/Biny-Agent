@@ -1,3 +1,4 @@
+import { captureToolSearchSchemas, supportsNativeToolSearch } from "./nativeToolSearch.js";
 /** 把 Biny 工具协议接到 Vercel AI SDK，并保留工具审计与进度事件。 */
 import { jsonSchema, tool, type ToolSet } from "ai";
 import { openai } from "@ai-sdk/openai";
@@ -19,6 +20,7 @@ export function createVercelTools(state: VercelLoopState): ToolSet {
     agentTool.name,
     tool({
       description: agentTool.description,
+      providerOptions: agentTool.anthropicDeferredDigest ? { anthropic: { deferLoading: true } } : undefined,
       inputSchema: jsonSchema(parameters as unknown as JSONSchema7, {
         // jsonSchema 本身只描述出站 schema；显式校验才能触发 SDK 的参数修复和拒绝路径。
         validate: (value) => {
@@ -53,6 +55,9 @@ export function createVercelTools(state: VercelLoopState): ToolSet {
                 });
               }
             );
+            if (agentTool.name === "ToolSearch" && supportsNativeToolSearch(state.model) && state.config.resolveToolSearchTools) {
+              captureToolSearchSchemas(result, state.context.messages, state.config.resolveToolSearchTools);
+            }
           } catch (error) {
             result = {
               content: [{ type: "text", text: errorMessage(error) }],
@@ -70,8 +75,9 @@ export function createVercelTools(state: VercelLoopState): ToolSet {
           return result;
         };
 
-        const sequential = state.config.toolExecution === "sequential"
-          || agentTool.executionMode === "sequential";
+        const target = agentTool.deferredTarget && isRecord(input) && typeof input.name === "string"
+          ? agentTool.deferredTarget(input.name) : agentTool;
+        const sequential = state.config.toolExecution === "sequential" || target?.executionMode === "sequential";
         if (!sequential) return await execute();
 
         const previous = state.sequentialToolTail;
@@ -89,6 +95,17 @@ export function createVercelTools(state: VercelLoopState): ToolSet {
   });
   const tools = Object.fromEntries(entries) as ToolSet;
   for (const agentTool of state.tools) {
+    if (agentTool.name === "ToolSearch" && supportsNativeToolSearch(state.model) && state.config.resolveToolSearchTools) {
+      const execute = tools[agentTool.name]!.execute!;
+      tools[agentTool.name] = {
+        ...openai.tools.toolSearch({ execution: "client", description: agentTool.description, parameters: normalizeToolParameters(agentTool.name, agentTool.parameters) as unknown as Record<string, unknown> }),
+        execute: async (input, options) => {
+          const result = await execute(input.arguments ?? {}, options) as AgentToolResult;
+          return { tools: (result.details as { loadedToolSchemas?: Array<Record<string, unknown>> } | undefined)?.loadedToolSchemas ?? [] };
+        }
+      };
+      continue;
+    }
     if (agentTool.providerTool !== "openai-apply-patch") continue;
     const execute = tools[agentTool.name]!.execute!;
     tools[agentTool.name] = {

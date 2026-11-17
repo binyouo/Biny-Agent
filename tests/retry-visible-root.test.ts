@@ -70,7 +70,7 @@ async function gap(t: TestContext, older = true, selected = false, compacted = f
       recorder: new SessionRecorder(root), permissionManager: new PermissionManager(config.permission), toolRegistry: registry,
       model: testModel({ provider: "synthetic", modelId: "visible-root", supportsTools: true,
         stream: async (context, options) => {
-          const events = context.systemPrompt?.includes("durable context checkpoint") ? answer(checkpointText())
+          const events = context.systemPrompt?.includes("durable context checkpoint") ? answer(checkpointText(JSON.stringify(context.messages).match(/\[source (m\d+) kind=message role=user\]/u)?.[1]))
             : options?.requestContext?.operation === "agent"
               ? (requests.push(structuredClone(context.messages)), await response()) : answer("AUXILIARY_TITLE");
           return (async function* () { yield* events; })();
@@ -266,11 +266,11 @@ test("already cancelled new ordinary input is admitted on the selected path with
   assert.match(JSON.stringify((await f.cold.resume(f.sessionId)).messages), /CANCELLED_NEW_INPUT/u);
 });
 
-function checkpointText(): string {
-  return ["## Goal", "- HISTORIC_REQUEST <!-- evidence:m0 -->", "## Constraints & Preferences", "- (none recorded)",
+function checkpointText(source = "m0"): string {
+  return ["## Goal", `- HISTORIC_REQUEST <!-- evidence:${source} -->`, "## Constraints & Preferences", "- (none recorded)",
     "## Progress", "### Done", "- (none verified)", "### In Progress", "- (none recorded)", "### Blocked", "- (unknown)",
     "## Key Decisions", "- (none recorded)", "## Errors & Fixes", "- (none recorded)", "## All User Messages",
-    "- HISTORIC_REQUEST <!-- evidence:m0 -->", "## Next Steps", "- (none recorded)", "## Critical Context", "- (none recorded)"].join("\n");
+    `- HISTORIC_REQUEST <!-- evidence:${source} -->`, "## Next Steps", "- (none recorded)", "## Critical Context", "- (none recorded)"].join("\n");
 }
 
 for (const older of [false, true]) for (const entry of ["host", "direct"] as const) {

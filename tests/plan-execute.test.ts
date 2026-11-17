@@ -250,7 +250,7 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     };
     const messages = body.messages ?? [];
     const system = textContent(messages[0]?.content);
-    const lastText = textContent(messages.at(-1)?.content);
+    const lastText = textContent(messages.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)?.content);
     const names = new Set((body.tools ?? []).flatMap((tool) => tool.name ?? tool.function?.name ?? []));
     if (system.includes("tool search assistant")) return streamText('{"tools":["PlanStart"]}');
     if (system.includes("选择需要的工具")) return streamText('{"tools":[]}');
@@ -353,7 +353,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
       tools?: Array<{ function?: { name?: string } }>;
     };
     const system = textContent(body.messages[0]?.content);
-    const last = body.messages.at(-1)!;
+    const last = body.messages.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)!;
     const lastText = textContent(last.content);
     if (system.includes("tool search assistant")) {
       return streamText(JSON.stringify({ tools: [pausedCancellation && cancelledTaskRunId ? "TaskStatus" : planning ? "PlanDraft" : "PlanStart"] }));
@@ -681,7 +681,7 @@ async function testHostReadOnlyReportPlan(): Promise<void> {
       tools?: Array<{ function?: { name?: string } }>;
     };
     const system = textContent(body.messages[0]?.content);
-    const last = body.messages.at(-1)!;
+    const last = body.messages.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)!;
     const names = (body.tools ?? []).map((tool) => tool.function?.name);
     if (system.includes("tool search assistant")) return streamText('{"tools":["PlanDraft"]}');
     if (system.includes("选择需要的工具")) return streamText('{"tools":[]}');
