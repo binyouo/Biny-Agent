@@ -19,7 +19,8 @@ import { replaySession } from "../src/session/replay.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 
-const roomy = 32_768;
+// 完整模型输入快照保留后，宽松档仍需容纳三轮资料，避免额外压缩掩盖恢复断言。
+const roomy = 65_536;
 const small = 8_192;
 const reserve = 4_096;
 const early = "EARLY_CONSTRAINT_KEEP_THE_ORIGINAL";
@@ -97,7 +98,8 @@ async function fixture(t: TestContext) {
         assert.equal(options?.requestContext?.operation, "agent");
         state.requests.push(structuredClone(context.messages));
       }
-      const text = summary ? checkpointText() : `REPLY_${state.requests.length}`;
+      const source = JSON.stringify(context.messages).match(/\[source (m\d+) kind=message role=user\]/u)?.[1] ?? "m0";
+      const text = summary ? checkpointText().replaceAll("evidence:m0", `evidence:${source}`) : `REPLY_${state.requests.length}`;
       const finish = summary ? "stop" : state.finish;
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         yield { type: "text-delta", text };

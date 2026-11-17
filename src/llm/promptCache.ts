@@ -1,13 +1,11 @@
 /**
- * Provider 缓存能力与模型请求形状诊断。
+ * 模型请求形状诊断。
  *
- * 这里不实现客户端 KV cache，也不改变 session 的 canonical 消息。它只负责把不同
- * Provider 的缓存字段和真正发出的请求形状归一化，方便 Agent Runtime 判断前缀变化原因。
+ * 归一化实际请求形状，供 Agent Runtime 判断前缀变化原因；不改变 canonical 消息。
  */
 import { createHash } from "node:crypto";
 import { normalizeToolParameters } from "../tools/schema.js";
 import type { AgentMessage, AgentTool } from "../agent/core/types.js";
-import type { ModelApiBackend } from "../config/schema.js";
 
 const stableTextHashCache = new Map<string, string>();
 const stableTextHashCacheLimit = 16;
@@ -16,25 +14,6 @@ const toolSchemaCache = new WeakMap<readonly AgentTool[], ToolSchemaCacheEntry>(
 const messageShapeCache = new WeakMap<object, unknown>();
 const messageProjectionCache = new WeakMap<readonly AgentMessage[], MessageProjectionCacheEntry>();
 let nextToolIdentityId = 1;
-
-export type PromptCacheMode = "implicit" | "explicit-key" | "breakpoint" | "unknown";
-
-export interface PromptCacheCapability {
-  mode: PromptCacheMode;
-  cacheReadFields: string[];
-  cacheWriteFields: string[];
-  cacheMissFields: string[];
-  fullInputIncludesCachedTokens?: boolean;
-  supportsPromptCacheKey?: boolean;
-}
-
-export interface PromptCacheCapabilityInput {
-  provider?: string;
-  providerAlias?: string;
-  modelId: string;
-  reasoningProtocol?: string;
-  api?: ModelApiBackend;
-}
 
 /**
  * 进程内的 prompt 投影缓存。
@@ -176,76 +155,6 @@ export interface PromptShapeInput {
   localPromptCache?: LocalPromptProjectionCache;
 }
 
-export function promptCacheCapability(input: PromptCacheCapabilityInput): PromptCacheCapability {
-  const identity = [input.provider, input.providerAlias, input.modelId, input.reasoningProtocol]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  if (input.provider === "openai" && (input.api === "chat_completions" || input.api === "responses")) {
-    return {
-      mode: "implicit",
-      cacheReadFields: ["prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens"],
-      cacheWriteFields: ["prompt_tokens_details.cache_write_tokens", "input_tokens_details.cache_write_tokens"],
-      cacheMissFields: [],
-      fullInputIncludesCachedTokens: true,
-      supportsPromptCacheKey: true
-    };
-  }
-
-  if (input.api === "google_generative_ai" || input.provider === "google-native" || input.provider === "gemini" || input.reasoningProtocol === "google") {
-    return {
-      mode: "implicit",
-      cacheReadFields: ["usageMetadata.total_cached_tokens", "usageMetadata.cachedContentTokenCount"],
-      cacheWriteFields: [],
-      cacheMissFields: [],
-      fullInputIncludesCachedTokens: true,
-      supportsPromptCacheKey: false
-    };
-  }
-
-  if (input.reasoningProtocol === "moonshotai" || /kimi|moonshot/u.test(identity)) {
-    return {
-      mode: "explicit-key",
-      cacheReadFields: ["cached_tokens"],
-      cacheWriteFields: [],
-      cacheMissFields: ["prompt_cache_miss_tokens"],
-      fullInputIncludesCachedTokens: true,
-      supportsPromptCacheKey: true
-    };
-  }
-
-  if (input.reasoningProtocol === "deepseek" || /deepseek/u.test(identity)) {
-    return {
-      mode: "implicit",
-      cacheReadFields: ["prompt_cache_hit_tokens"],
-      cacheWriteFields: ["prompt_cache_write_tokens"],
-      cacheMissFields: ["prompt_cache_miss_tokens"],
-      fullInputIncludesCachedTokens: true,
-      supportsPromptCacheKey: false
-    };
-  }
-
-  if (/glm|zhipu|bigmodel/u.test(identity)) {
-    return {
-      mode: "implicit",
-      cacheReadFields: ["prompt_tokens_details.cached_tokens"],
-      cacheWriteFields: ["prompt_tokens_details.cache_write_tokens"],
-      cacheMissFields: ["prompt_cache_miss_tokens"],
-      fullInputIncludesCachedTokens: true,
-      supportsPromptCacheKey: false
-    };
-  }
-
-  return {
-    mode: "unknown",
-    cacheReadFields: [],
-    cacheWriteFields: [],
-    cacheMissFields: [],
-    supportsPromptCacheKey: false
-  };
-}
-
 export function computePromptShapeDiagnostic(
   input: PromptShapeInput,
   previous: PromptShapeDiagnostic | undefined
@@ -370,7 +279,8 @@ function getToolSchemaCache(
   const schemas = sorted.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    parameters: tool.parameters
+    parameters: tool.parameters,
+    defer_loading: tool.anthropicDeferredDigest ? true : undefined
   }));
   const entry: ToolSchemaCacheEntry = {
     fingerprint,

@@ -11,7 +11,7 @@ import { formatExtensionReport } from "../src/extensions/report.js";
 import { rankSkillsByQuery, createSkillResourceTool, createSkillTool, loadSkills } from "../src/extensions/skills.js";
 import { calculateUsageCost, sumSessionUsage, summarizeUsage } from "../src/observability/usage.js";
 import { buildSystemPrompt, stableSystemPromptForCache } from "../src/agent/prompts.js";
-import { canonicalToolSchemaHash, computePromptShapeDiagnostic, LocalPromptProjectionCache, promptCacheCapability } from "../src/llm/promptCache.js";
+import { canonicalToolSchemaHash, computePromptShapeDiagnostic, LocalPromptProjectionCache } from "../src/llm/promptCache.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { analyzePermissionRequest } from "../src/permission/policy.js";
 import { ToolRegistry } from "../src/tools/registry.js";
@@ -184,12 +184,6 @@ function testPromptCacheAccounting(): void {
   assert.equal(unknown.latestCacheHitRate, undefined);
   assert.equal(unknown.sessionCacheHitRate, undefined);
 
-  assert.equal(promptCacheCapability({ provider: "openai-compatible", providerAlias: "kimi", modelId: "kimi-k2" }).supportsPromptCacheKey, true);
-  assert.equal(promptCacheCapability({ provider: "deepseek", modelId: "deepseek-chat" }).supportsPromptCacheKey, false);
-  assert.equal(promptCacheCapability({ provider: "zhipu", modelId: "glm-4" }).cacheReadFields[0], "prompt_tokens_details.cached_tokens");
-  assert.equal(promptCacheCapability({ provider: "openai", modelId: "gpt-5", api: "responses" }).supportsPromptCacheKey, true);
-  assert.equal(promptCacheCapability({ provider: "openai-compatible", providerAlias: "relay", modelId: "gpt-5", api: "chat_completions" }).supportsPromptCacheKey, false);
-  assert.equal(promptCacheCapability({ provider: "google-native", modelId: "gemini-2.5-pro", api: "google_generative_ai" }).cacheReadFields[0], "usageMetadata.total_cached_tokens");
 
   const toolA = { name: "alpha", description: "Alpha", parameters: { type: "object" as const } };
   const toolB = { name: "beta", description: "Beta", parameters: { type: "object" as const } };
@@ -199,8 +193,8 @@ function testPromptCacheAccounting(): void {
   assert.deepEqual(localPromptCache.stats(), { entries: 1, hits: 1, misses: 1, evictions: 0 });
   canonicalToolSchemaHash([toolA], localPromptCache);
   assert.deepEqual(localPromptCache.stats(), { entries: 1, hits: 1, misses: 2, evictions: 1 });
-  const firstPrompt = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "dynamic-a", tools: [toolB, toolA] });
-  const secondPrompt = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "dynamic-b", tools: [toolA, toolB] });
+  const firstPrompt = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "dynamic-a" });
+  const secondPrompt = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "dynamic-b" });
   assert.notEqual(stableSystemPromptForCache(firstPrompt), stableSystemPromptForCache(secondPrompt));
   const firstShape = computePromptShapeDiagnostic({
     provider: "openai-compatible",

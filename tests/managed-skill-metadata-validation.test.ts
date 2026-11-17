@@ -1,11 +1,11 @@
-/** Managed imports must reject optional metadata that would make an installed Skill unloadable. */
+/** Local Skill creation must reject metadata that runtime discovery cannot load. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { importManagedSkillSource, installManagedSkillSource, listManagedSkillSources } from "../src/extensions/managedSkillSources.js";
+import { parseManagedSkillMetadata } from "../src/extensions/managedSkillSources.js";
 
 const cliPath = path.resolve("src/cli/index.ts");
 const tsxPath = import.meta.resolve("tsx");
@@ -27,16 +27,15 @@ function document(name: string, metadata: string, body = "Fixture instructions.\
   return `---\nname: ${name}\ndescription: Inert managed import fixture\n${metadata}\n---\n${body}`;
 }
 
-async function withFixture(run: (fixture: { root: string; sourceFile: string; sourceRoot: string; skillRoot: string; invoke: (args: string[]) => ReturnType<typeof invokeCli> }) => Promise<void>): Promise<void> {
+async function withFixture(run: (fixture: { root: string; sourceFile: string; skillRoot: string; invoke: (args: string[]) => ReturnType<typeof invokeCli> }) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-managed-metadata-"));
   const sourceFile = path.join(root, "input", "optional-skill", "SKILL.md");
-  const sourceRoot = path.join(root, "sources");
   const skillRoot = path.join(root, "config", "skills");
   try {
     await mkdir(path.dirname(sourceFile), { recursive: true });
     await mkdir(path.join(root, "workspace"));
     await mkdir(path.join(root, "home"));
-    await run({ root, sourceFile, sourceRoot, skillRoot, invoke: (args) => invokeCli(root, args) });
+    await run({ root, sourceFile, skillRoot, invoke: (args) => invokeCli(root, args) });
   } finally { await rm(root, { recursive: true, force: true }); }
 }
 
@@ -52,48 +51,36 @@ function invokeCli(root: string, args: string[]) {
   return result;
 }
 
-test("managed import rejects runtime-invalid optional metadata before creating source or installed roots", async (context) => {
+test("CLI create rejects runtime-invalid optional metadata before writing and preserves existing Skills", async (context) => {
   for (const [metadata, message] of invalidMetadata) {
     await context.test(metadata.slice(0, 60), async () => {
-      await withFixture(async ({ sourceFile, sourceRoot, skillRoot }) => {
+      await withFixture(async ({ sourceFile, skillRoot, invoke }) => {
         const content = document("optional-skill", metadata);
         await writeFile(sourceFile, content);
-        await assert.rejects(importManagedSkillSource({ sourceFile, root: sourceRoot, installedRoot: skillRoot }), { message });
-        await assert.rejects(readdir(sourceRoot), { code: "ENOENT" });
+        assert.throws(() => parseManagedSkillMetadata(content, "optional-skill"), { message });
+        const rejected = invoke(["create", "optional-skill", "--file", sourceFile]);
+        assert.equal(rejected.status, 1, rejected.stderr);
+        assert.equal(rejected.stdout, "");
+        assert.equal(rejected.stderr.trim(), message);
         await assert.rejects(readdir(path.dirname(skillRoot)), { code: "ENOENT" });
+        const existing = path.join(skillRoot, "existing-skill", "SKILL.md");
+        const existingContent = document("existing-skill", "license: MIT");
+        await mkdir(path.dirname(existing), { recursive: true });
+        await writeFile(existing, existingContent);
+        const retried = invoke(["create", "optional-skill", "--file", sourceFile]);
+        assert.equal(retried.status, 1, retried.stderr);
+        assert.equal(retried.stdout, "");
+        assert.equal(retried.stderr.trim(), message);
+        assert.deepEqual(await readdir(skillRoot), ["existing-skill"]);
+        assert.equal(await readFile(existing, "utf8"), existingContent);
         assert.equal(await readFile(sourceFile, "utf8"), content);
       });
     });
   }
 });
 
-test("edited managed sources are warned and cannot install without changing existing Skills or source bytes", async () => {
-  await withFixture(async ({ sourceFile, sourceRoot, skillRoot }) => {
-    const original = document("optional-skill", "allowed-tools: Read");
-    await writeFile(sourceFile, original);
-    await importManagedSkillSource({ sourceFile, root: sourceRoot, installedRoot: skillRoot });
-    const existing = path.join(skillRoot, "existing-skill", "SKILL.md");
-    const existingContent = document("existing-skill", "license: MIT");
-    await mkdir(path.dirname(existing), { recursive: true });
-    await writeFile(existing, existingContent);
-    const managedFile = path.join(sourceRoot, "optional-skill", "SKILL.md");
-    for (const [metadata, message] of invalidMetadata) {
-      const content = document("optional-skill", metadata);
-      await writeFile(managedFile, content);
-      const listed = await listManagedSkillSources({ root: sourceRoot, installedRoot: skillRoot });
-      assert.deepEqual(listed.sources, []);
-      assert.deepEqual(listed.warnings, [`跳过 Skill 来源 ${path.dirname(managedFile)}：${message}`]);
-      await assert.rejects(installManagedSkillSource({ sourceId: "optional-skill", root: sourceRoot, skillRoot }), { message: "Skill 来源不存在，可能已经被删除。" });
-      assert.deepEqual(await readdir(skillRoot), ["existing-skill"]);
-      assert.equal(await readFile(existing, "utf8"), existingContent);
-      assert.equal(await readFile(managedFile, "utf8"), content);
-      assert.equal(await readFile(sourceFile, "utf8"), original);
-    }
-  });
-});
-
-test("valid optional metadata retains exact bytes through import, install, runtime list and check", async () => {
-  await withFixture(async ({ root, sourceRoot, skillRoot, invoke }) => {
+test("valid optional metadata retains exact bytes through CLI create, runtime list and check", async () => {
+  await withFixture(async ({ root, skillRoot, invoke }) => {
     const valid = [
       { name: "string-tools", metadata: "license: MIT\ncompatibility: '   '\nallowed-tools: Read Bash(git:*)\nmetadata:\n  example: {version: 2, nested: [true, null]}" },
       { name: "array-tools", metadata: `license: ''\ncompatibility: ' ${"x".repeat(500)} '\nallowed-tools: [Read, '', ' Bash(git:*) ']\nmetadata: {}` },
@@ -104,12 +91,19 @@ test("valid optional metadata retains exact bytes through import, install, runti
       const content = document(name, metadata, body);
       await mkdir(path.dirname(sourceFile));
       await writeFile(sourceFile, content);
-      const imported = await importManagedSkillSource({ sourceFile, root: sourceRoot, installedRoot: skillRoot });
-      assert.equal(imported.installed, false);
-      const installed = await installManagedSkillSource({ sourceId: name, root: sourceRoot, skillRoot });
-      assert.equal(installed.installed, true);
-      for (const file of [sourceFile, path.join(sourceRoot, name, "SKILL.md"), path.join(skillRoot, name, "SKILL.md")]) {
+      const created = invoke(["create", name, "--file", sourceFile]);
+      assert.equal(created.status, 0, created.stderr);
+      assert.equal(created.stderr, "");
+      for (const file of [sourceFile, path.join(skillRoot, name, "SKILL.md")]) {
         assert.equal(await readFile(file, "utf8"), content);
+      }
+      if (name === "string-tools") {
+        await writeFile(sourceFile, document(name, metadata, "Changed source body.\n"));
+        const duplicate = invoke(["create", name, "--file", sourceFile]);
+        assert.equal(duplicate.status, 1, duplicate.stderr);
+        assert.equal(duplicate.stdout, "");
+        assert.match(duplicate.stderr, /EEXIST/u);
+        assert.equal(await readFile(path.join(skillRoot, name, "SKILL.md"), "utf8"), content);
       }
       const checked = invoke(["check", name, "--json"]);
       assert.equal(checked.status, 0, checked.stderr);
@@ -120,10 +114,6 @@ test("valid optional metadata retains exact bytes through import, install, runti
       assert.equal(report.reports[0]?.status, "unverified");
       assert.deepEqual(report.diagnostics, []);
     }
-    const managed = await listManagedSkillSources({ root: sourceRoot, installedRoot: skillRoot });
-    assert.deepEqual(managed.warnings, []);
-    assert.equal(managed.sources.length, 3);
-    assert.equal(managed.sources.every((source) => source.installed), true);
     const result = invoke(["list", "--json"]);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stderr, "");

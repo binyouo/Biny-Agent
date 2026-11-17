@@ -15,7 +15,7 @@ const names = [
   "normalizedToolName", "isKnownSemanticTool", "normalizePath", "asRecord", "stringField",
   "numberField", "stableJson"
 ] as const;
-const directCalls = new Set<string>([...names, "serializeToolResult", "String", "Boolean"]);
+const directCalls = new Set<string>([...names, "serializeToolResult", "String", "Boolean", "isRuntimeContext"]);
 const methodCalls = new Set([
   "messages.entries", "message.content.filter", "entry.message.content.some", "calls.set", "calls.get", "entries.push",
   "entries.filter", "exact.get", "exact.set", "reads.push", "readBuckets.get", "readBuckets.set",
@@ -116,6 +116,9 @@ const baselineSelection = [
 ].join("\n");
 const baselineFile = ts.createSourceFile("baseline-selection.ts", baselineSelection, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 declaration(baselineFile, "findReplacements");
+const runtimePath = path.resolve(process.cwd(), "src/agent/context/runtimeContext.ts");
+const runtimeSource = ts.createSourceFile(runtimePath, readFileSync(runtimePath, "utf8"), ts.ScriptTarget.Latest, true);
+const runtimePredicate = declaration(runtimeSource, "isRuntimeContext").getText(runtimeSource).replace(/^export\s+/u, "");
 
 function compile(reference: boolean): string {
   const declarations = names.map(name => {
@@ -130,6 +133,7 @@ function compile(reference: boolean): string {
   });
   const code = [
     "function serializeToolResult(value: unknown): string { return JSON.stringify(value) ?? 'null'; }",
+    runtimePredicate,
     ...declarations
   ].join("\n");
   const result = ts.transpileModule(code, { reportDiagnostics: true,

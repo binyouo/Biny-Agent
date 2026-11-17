@@ -6,4 +6,3 @@ export * from "./stream.js";
 export * from "./record.js";
 export * from "./privacyFetch.js";
 export { placeholderTag, placeholderPattern } from "./crypto.js";
-export { resetStoreForTest, registeredCount } from "./store.js";

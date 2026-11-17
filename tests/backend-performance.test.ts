@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test, mock } from "node:test";
-import { buildSessionTree, refreshSessionIndex, getSessionCatalogItem, updateSessionCatalogMetadata, sessionCatalogDirectory, type SessionCatalogItem } from "../src/session/catalog.js";
-import { listSessionSummaries, readStoredSessionEvents, parseSessionEventsDetailed } from "../src/session/events.js";
+import { buildSessionTree, refreshSessionIndex, updateSessionCatalogMetadata, sessionCatalogDirectory, type SessionCatalogItem } from "../src/session/catalog.js";
+import { listSessionSummaries, readSessionSummary, readStoredSessionEvents, parseSessionEventsDetailed } from "../src/session/events.js";
 import { maxSessionEvents } from "../src/session/limits.js";
 import { createSessionFile, ensureAgentDirs } from "../src/session/store.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
@@ -80,7 +80,7 @@ test("list scans cache summaries without evicting active events or rereading bod
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test("single catalog lookup does not read unrelated JSONL bodies", async () => {
+test("single session summary does not read unrelated JSONL bodies", async () => {
   const root = await workspace();
   try {
     for (const id of ["target", "unrelated"]) await createSessionFile(root, id, Buffer.from('{"type":"user_message","content":"hello"}\n'));
@@ -92,9 +92,9 @@ test("single catalog lookup does not read unrelated JSONL bodies", async () => {
       return handle;
     });
     try {
-      assert.equal((await getSessionCatalogItem(root, "target"))?.id, "target");
+      assert.equal((await readSessionSummary(root, "target"))?.fileName, "target.jsonl");
       assert.equal(unrelatedReads, 0);
-      assert.equal(await getSessionCatalogItem(root, "missing"), undefined);
+      await assert.rejects(readSessionSummary(root, "missing"), /Session not found: missing/u);
     } finally { spy.mock.restore(); }
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

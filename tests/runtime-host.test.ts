@@ -1,5 +1,6 @@
 import { readyHostClient } from "./helpers/readyHostClient.js";
 import { maskJson } from "../src/privacy/json.js";
+import { RedactionStore } from "../src/privacy/store.js";
 import { recordMask, maskingDetail, resetMaskRecordsForTest } from "../src/privacy/record.js";
 import { createHostTestStores } from "./helpers/hostStores.js";
 import { removeTestRoot } from "./helpers/memoryOwnerCleanup.js";
@@ -396,7 +397,7 @@ async function main(): Promise<void> {
 
   assert.ok(client);
   resetMaskRecordsForTest();
-  const privacyInput = maskJson(JSON.stringify({ messages: [{ content: "sk-proj-0123456789abcdefghijklmnop" }] }), { enabled: true });
+  const privacyInput = maskJson(JSON.stringify({ messages: [{ content: "sk-proj-0123456789abcdefghijklmnop" }] }), { enabled: true }, new RedactionStore());
   const ownRecord = recordMask({ provider: "fixture", model: "fixture", sessionId: snapshot.info.sessionId, segments: privacyInput.segments })!;
   const otherRecord = recordMask({ provider: "fixture", model: "fixture", sessionId: "session-other-host", segments: privacyInput.segments })!;
   const privacyOverview = await client.maskingOverview();

@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { load as loadSqliteVec } from "sqlite-vec";
+import { getLoadablePath } from "sqlite-vec";
 import { normalizeEmbedding } from "../../llm/embedding/vector.js";
 import { AGENT_DATABASE_FILE } from "../../config/paths.js";
 
@@ -466,7 +466,16 @@ function validateIdentifier(value: string, label: string): void {
 
 function loadVectorExtension(database: DatabaseSync): boolean {
   try {
-    loadSqliteVec(database);
+    let extensionPath = getLoadablePath();
+    const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+    // SQLite 直接加载动态库，不经过 Electron 的 asar 文件读取适配。
+    if (process.versions.electron && resources && path.isAbsolute(resources) && path.isAbsolute(extensionPath)) {
+      const relative = path.relative(path.join(resources, "app.asar"), extensionPath);
+      if (relative && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+        extensionPath = path.join(resources, "app.asar.unpacked", relative);
+      }
+    }
+    database.loadExtension(extensionPath);
     return true;
   } catch {
     return false;

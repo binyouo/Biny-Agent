@@ -288,13 +288,11 @@ async function initializeCommandRuntime(
     await computerLease.close();
     computerLease = createComputerMcpLease(resourceScope.mcp);
   };
-  let unsubscribeResources: (() => void) | undefined = undefined;
   let resourceRelease: Promise<void> | undefined;
   const releaseResourceScope = (): Promise<void> => resourceRelease ??= (async () => {
     const failures: unknown[] = [];
     try { await computerLease.close(); } catch (error) { failures.push(error); }
     try {
-      unsubscribeResources?.();
       if (ownsResourceScope) await resourceScope.close();
       else if (options.resourceRegistry) await options.resourceRegistry.release(resourceScope);
       else resourceScope.release();
@@ -302,16 +300,12 @@ async function initializeCommandRuntime(
     if (failures.length) throw new AggregateError(failures, "Runtime extension cleanup failed.");
   })();
   cleanup.resources = releaseResourceScope;
-  let skills: SkillBundle = resourceScope.skills;
   const runSkillSnapshots = new Map<string, SkillBundle>();
   const skillsForRun = (runId?: string): SkillBundle => runId === undefined
-    ? requireSkillBundle(skills)
-    : runSkillSnapshots.get(runId) ?? requireSkillBundle(skills);
+    ? resourceScope.skills
+    : runSkillSnapshots.get(runId) ?? resourceScope.skills;
   const resourceBoot = options.resourceBoot ?? (ownsResourceScope ? "blocking" : "background");
   const resourceStart = resourceScope.start();
-  unsubscribeResources = resourceScope.subscribe(() => {
-    skills = resourceScope.skills;
-  });
   const ai = new AiRegistry();
   await ensureAgentDirs(persistenceRoot);
   await ensureAttachmentRoot(persistenceRoot);
@@ -415,7 +409,7 @@ async function initializeCommandRuntime(
   let subagentParentRunId: string | undefined;
   let supervisionRun = false;
   const currentSkillBundle = (): SkillBundle => subagentParentRunId === undefined
-    ? requireSkillBundle(skills)
+    ? resourceScope.skills
     : skillsForRun(subagentParentRunId);
   let subagentDefinitions: SubagentDefinition[] = [];
   const durableSubagentBindings = new Map<string, {
@@ -474,10 +468,6 @@ async function initializeCommandRuntime(
     for (const name of previous) {
       if (registered.get(name)?.source === "mcp") toolRegistry.unregister(name);
     }
-  };
-  const refreshSkills = async (force = false): Promise<void> => {
-    await resourceScope.refreshSkills(force);
-    skills = resourceScope.skills;
   };
   // 具名子代理定义每次委派时重新读取（会话期间可编辑生效）；启动时读一次用于 prompt 与报告。
   const loadAgentDefinitions = (): Promise<SubagentDefinition[]> => loadSubagentDefinitions({
@@ -651,11 +641,10 @@ async function initializeCommandRuntime(
   });
   // Desktop Host 的 MCP/Skill 启动在后台进行；私有 CLI/TUI runtime 仍在这里等待首个稳定快照。
   if (resourceBoot === "blocking") await resourceStart;
-  skills = resourceScope.skills;
   toolRegistry.registerUserTool(createSkillTool(currentSkillBundle, async (force) => {
-    await refreshSkills(force);
+    await resourceScope.refreshSkills(force);
     // 显式激活更新本回合的技能元数据，后续资源读取也能定位刚安装的技能。
-    if (subagentParentRunId !== undefined) runSkillSnapshots.set(subagentParentRunId, structuredClone(requireSkillBundle(skills)));
+    if (subagentParentRunId !== undefined) runSkillSnapshots.set(subagentParentRunId, structuredClone(resourceScope.skills));
   }));
   toolRegistry.registerHostReadQuery(createSkillResourceTool(currentSkillBundle), "read_skill_resource");
   refreshExtensionTools();
@@ -749,9 +738,9 @@ async function initializeCommandRuntime(
       minToolCalls,
       onNotice,
       onAnalyzed,
-      installedSkills: requireSkillBundle(skills).skills,
+      installedSkills: resourceScope.skills.skills,
       model: resolveToolModel(config, providerCredentials),
-      refreshSkills: async () => await refreshSkills(true)
+      refreshSkills: () => resourceScope.refreshSkills(true)
     }),
     subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
     skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
@@ -945,8 +934,8 @@ async function initializeCommandRuntime(
   // MCP 连接状态与工具集合在运行期会变（断线、重连、list_changed），报告每次实时取。
   const extensionStatus = (): ExtensionStatus => ({
     mcp: mcpHost.listServers(),
-    skills: [...requireSkillBundle(skills).skills],
-    skillWarnings: [...requireSkillBundle(skills).warnings],
+    skills: [...resourceScope.skills.skills],
+    skillWarnings: [...resourceScope.skills.warnings],
     plugins: [...loadedPlugins],
     subagent: { ...config.extensions.subagent, agents: [...subagentDefinitions] },
     toolScheduling: {
@@ -1507,9 +1496,9 @@ async function initializeCommandRuntime(
       || Boolean(subagentTaskManager?.listSnapshots().some((task) => task.status === "queued" || task.status === "running")),
     extensionReport: (section?: ExtensionSection): string => formatExtensionReport(extensionStatus(), section),
     extensionStatus: (): ExtensionStatus => extensionStatus(),
-    listSkills: (): SkillDefinition[] => [...requireSkillBundle(skills).skills],
+    listSkills: (): SkillDefinition[] => [...resourceScope.skills.skills],
     captureRunResourceSnapshot: (runId: string): void => {
-      runSkillSnapshots.set(runId, structuredClone(requireSkillBundle(skills)));
+      runSkillSnapshots.set(runId, structuredClone(resourceScope.skills));
     },
     runSkillPaths: (runId: string): string[] => skillPathsForSelection(skillsForRun(runId)),
     releaseRunResourceSnapshot: (runId: string): void => { runSkillSnapshots.delete(runId); },
@@ -1537,7 +1526,7 @@ async function initializeCommandRuntime(
         ...extensionTools
       ];
     },
-    refreshSkills,
+    refreshSkills: (force) => resourceScope.refreshSkills(force),
     refreshExtensionTools,
     setBrowserAutomation,
     resourceSnapshot: (): RuntimeResourceReadiness => resourceScope.readiness(),
@@ -1965,22 +1954,4 @@ function subagentModelSettings(config: AgentConfig, modelManager: ModelManager, 
 function requireModelManager(modelManager: ModelManager | undefined): ModelManager {
   if (!modelManager) throw new Error("Model runtime is not initialized.");
   return modelManager;
-}
-
-function requireSkillBundle(skills: SkillBundle | undefined): SkillBundle {
-  if (!skills) throw new Error("Skill runtime is not initialized.");
-  return skills;
-}
-
-export async function withCommandRuntime(workspaceRoot: string, fn: (runtime: CommandRuntime) => Promise<void>): Promise<void> {
-  const runtime = await createCommandRuntime(workspaceRoot);
-  try {
-    await fn(runtime);
-  } catch (error) {
-    // 命令层的异常统一落到 session，方便 resume 时看到失败原因。
-    runtime.agent.recordError(error);
-    throw error;
-  } finally {
-    await runtime.close();
-  }
 }

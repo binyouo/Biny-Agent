@@ -74,8 +74,8 @@ test("真实 Runtime 辅助 OAuth 续期持久化到凭据存储，后续回合�
     }
     const step = mainRequests++ % 3;
     if (step === 0 || step === 1) {
-      const name = step === 0 ? "ToolSearch" : "Read";
-      const args = step === 0 ? { query: `inspect note contents, pass ${String(mainRequests)}` } : { path: "note.txt" };
+      const name = step === 0 ? "ToolSearch" : "ToolCall";
+      const args = step === 0 ? { query: `inspect note contents, pass ${String(mainRequests)}` } : { name: "Read", arguments: { path: "note.txt" } };
       chatResponse(response, { tool_calls: [{ index: 0, id: `fixture-${String(mainRequests)}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, "tool_calls");
     } else chatResponse(response, { content: "Completed local inspection." }, "stop");
   })().catch((error: unknown) => {

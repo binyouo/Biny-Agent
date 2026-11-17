@@ -10,6 +10,7 @@ import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProje
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { DesktopSettingsTransaction } from "../src/desktop/electron/main/DesktopSettingsTransaction.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
+import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
 import { InMemoryModelsStore, modelCatalogCacheKey } from "../src/llm/ModelsStore.js";
 
 async function createFixture(fetcher?: typeof fetch) {
@@ -48,6 +49,54 @@ async function createFixture(fetcher?: typeof fetch) {
     await rm(root, { recursive: true, force: true });
   } };
 }
+
+test("combined settings preserve normalization and reject invalid candidates before persistence", async () => {
+  const h = await createFixture();
+  try {
+    const before = await h.store.load();
+    const input = settingsSaveInputSchema.parse({
+      expectedPreferenceRevision: h.state.settingsPreferences().revision,
+      expectedConfigRevision: await h.manager.settingsConfigRevision(h.project.id),
+      memory: { useMemories: false, generateMemories: false },
+      identity: { enabled: false, userEnabled: true },
+      compaction: { enabled: false },
+      rtkEnabled: false,
+      toolExecutionMode: "direct",
+      chatParams: { temperature: 0.3 },
+      permission: { mode: "read-only", allowTools: ["Read"], allowPaths: ["src"], denyPaths: ["private"], criticalAlwaysAsk: true },
+      skills: { globalDefaults: { alpha: true }, projectOverrides: { alpha: false } },
+      activity: { enabled: false, captureDebounceMs: 1 },
+      webSearch: { provider: "google", visibleBrowsing: false, timeoutMs: 4_000, maxResults: 3 },
+      redaction: { enabled: true },
+      models: { upserts: [], removeAliases: [], toolModel: { alias: "tool" } }
+    });
+    const originalInput = structuredClone(input);
+    const prepared = await h.manager.prepareSettingsConfig(h.project.id, input);
+    assert.equal(prepared.after.context.memory.enabled, false);
+    assert.equal(prepared.after.context.memory.maxRecalled, 5);
+    assert.deepEqual(prepared.after.context.identity, { enabled: false, userEnabled: true });
+    assert.equal(prepared.after.context.compaction.enabled, false);
+    assert.equal(prepared.after.agent.rtkEnabled, false);
+    assert.equal(prepared.after.agent.toolExecutionMode, "direct");
+    assert.equal(prepared.after.chat.temperature, 0.3);
+    assert.equal(prepared.after.chat.cacheMarkers, true);
+    assert.deepEqual(prepared.after.permission, input.permission);
+    assert.deepEqual(prepared.after.extensions.skillDefaults, { alpha: true });
+    assert.deepEqual(Object.values(prepared.after.extensions.skillProjectOverrides), [{ alpha: false }]);
+    assert.equal(prepared.after.activity.enabled, false);
+    assert.equal(prepared.after.activity.captureDebounceMs, 3_000);
+    assert.deepEqual(prepared.after.web.search, { provider: "google", visibleBrowsing: false, timeoutMs: 4_000, maxResults: 3 });
+    assert.deepEqual(prepared.after.redaction, { enabled: true });
+    assert.equal(prepared.after.toolModel, "tool");
+    assert.deepEqual(prepared.before, before);
+    assert.deepEqual(input, originalInput);
+    assert.deepEqual(await h.store.load(), before);
+    await assert.rejects(h.manager.prepareSettingsConfig(h.project.id, {
+      ...input, models: undefined, webSearch: { ...input.webSearch!, maxResults: 0 }
+    }), /maxResults/u);
+    assert.deepEqual(await h.store.load(), before);
+  } finally { await h.close(); }
+});
 
 test("saving a vision selection reads only its Provider catalog", async context => {
   const h = await createFixture();

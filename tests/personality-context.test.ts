@@ -152,7 +152,7 @@ test("conversation retains each turn's mood through later turns and session resu
     await emotions.writeBase({ mood: "relieved", energy: 7, valence: 8, updatedAt: new Date().toISOString(), trigger: "SECOND_CAUSE：终于找到原因" });
     await agent.runTask("找到原因了。", { emotionAnalysis: false });
     const second = requests.at(-1)!;
-    const users = second.messages.filter(message => message.role === "user");
+    const users = second.messages.filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content)));
     assert.match(JSON.stringify(users[0]?.content), /FIRST_CAUSE/u);
     assert.doesNotMatch(JSON.stringify(users[0]?.content), /SECOND_CAUSE/u);
     assert.match(JSON.stringify(users.at(-1)?.content), /SECOND_CAUSE/u);
@@ -161,7 +161,7 @@ test("conversation retains each turn's mood through later turns and session resu
     await agent.initialize();
     await agent.resume("mood-history");
     await agent.runTask("回想一下刚才。", { emotionAnalysis: false });
-    const restored = requests.at(-1)!.messages.filter(message => message.role === "user");
+    const restored = requests.at(-1)!.messages.filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content)));
     assert.match(JSON.stringify(restored[0]?.content), /FIRST_CAUSE/u);
     assert.match(JSON.stringify(restored[1]?.content), /SECOND_CAUSE/u);
     assert.doesNotMatch(JSON.stringify(restored[0]?.content), /biny emotion set-base/u, "historical mood is context, without repeating command instructions");
