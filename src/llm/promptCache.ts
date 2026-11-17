@@ -279,7 +279,8 @@ function getToolSchemaCache(
   const schemas = sorted.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    parameters: tool.parameters
+    parameters: tool.parameters,
+    defer_loading: tool.anthropicDeferredDigest ? true : undefined
   }));
   const entry: ToolSchemaCacheEntry = {
     fingerprint,

@@ -270,16 +270,81 @@ test("独立页面切换保留未保存主题和关闭确认，Activity Record �
   } finally { await h.close(); }
 });
 
-test("设置加载失败持续显示重试入口，重试期间不声称已保存", async () => {
+test("通用页首帧保留全部固定控件，快照返回前的外观修改进入同一保存事务", async () => {
+  const gate = Promise.withResolvers<DesktopSettingsSnapshot>();
+  const writes: DesktopSettingsSaveInput[] = [];
+  const quick = { autoHideOnBlur: true, injectScreenContext: true, clickThrough: false };
+  const h = await harness({ settingsSnapshot: () => gate.promise,
+    quickChatSettings: () => new Promise(() => {}),
+    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+      writes.push(input);
+      return { status: "committed", journalId: "early-appearance", appliedFields: ["themePreference"],
+        snapshot: { ...snapshot(), themePreference: input.themePreference } };
+    } });
+  try {
+    await h.overlay({ targetTab: "通用", quickChatSettings: quick });
+    assert.equal(document.querySelector(".settings-load-state"), null);
+    assert.doesNotMatch(document.querySelector(".settings-content")?.textContent ?? "", /正在加载/u);
+    for (const label of ["工具模型", "启用视觉模型", "默认 Coding Agent", "失焦时自动隐藏", "注入前台应用上下文", "以环境（点击穿透）模式启动"]) {
+      assert.ok(document.querySelector(`[aria-label="${label}"]`), `${label} must exist before any settings response`);
+    }
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="注入前台应用上下文"]')?.checked, true);
+    await h.click('input[value="dark"]');
+    assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
+    assert.match(document.querySelector(".settings-page-footer")?.textContent ?? "", /未保存/u);
+    assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, true);
+    await h.React.act(async () => gate.resolve(snapshot()));
+    assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true, "late config must not replace an early edit");
+    await h.click(".settings-save-button");
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.themePreference, "dark");
+    assert.equal(writes[0]?.expectedPreferenceRevision, 1);
+    assert.equal(writes[0]?.models, undefined);
+  } finally { await h.close(); }
+});
+
+test("首次读取期间丢弃外观编辑，迟到快照不恢复已丢弃的草稿", async () => {
+  const gate = Promise.withResolvers<DesktopSettingsSnapshot>();
+  const previews: string[] = [];
+  let closes = 0;
+  const h = await harness({ settingsSnapshot: () => gate.promise });
+  h.dom.window.confirm = () => true;
+  try {
+    await h.overlay({ targetTab: "通用", onThemePreference: (value: string) => previews.push(value), onClose: () => { closes++; } });
+    await h.click('input[value="dark"]');
+    await h.click('[aria-label="关闭设置"]');
+    assert.equal(closes, 1);
+    assert.equal(previews.at(-1), "system");
+    await h.React.act(async () => gate.resolve(snapshot()));
+    assert.equal(document.querySelector<HTMLInputElement>('input[value="system"]')?.checked, true);
+    assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, true);
+  } finally { await h.close(); }
+});
+
+test("无项目的通用页不读取无关的 Computer History 配置", async () => {
+  let activityReads = 0;
+  let settingsReads = 0;
+  const h = await harness({ activitySettings: async () => { activityReads++; return { activity: snapshot().activity }; },
+    settingsSnapshot: async () => { settingsReads++; return snapshot(); } });
+  try {
+    await h.overlay({ targetTab: "通用", workspace: undefined });
+    assert.equal(activityReads, 0);
+    assert.equal(settingsReads, 0);
+    assert.equal(document.querySelectorAll('[role="radiogroup"][aria-label="外观"] input').length, 3);
+  } finally { await h.close(); }
+});
+
+test("通用页读取失败保留固定控件和重试入口，重试不重新遮挡页面", async () => {
   let attempt = 0;
   const deferred = Promise.withResolvers<DesktopSettingsSnapshot>();
   const h = await harness({ settingsSnapshot: async () => { if (++attempt === 1) throw new Error("读取失败"); return await deferred.promise; } });
   try {
     await h.overlay({ targetTab: "通用" });
     assert.match(document.querySelector('[role="alert"]')?.textContent ?? "", /读取失败/u);
+    assert.equal(document.querySelectorAll('[role="radiogroup"][aria-label="外观"] input').length, 3);
     assert.doesNotMatch(document.querySelector('.settings-page-footer')?.textContent ?? "", /无待保存更改/u);
     await h.click('[aria-label="重新加载设置"]');
-    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /加载/u);
+    assert.equal(document.querySelector(".settings-load-state"), null);
     await h.React.act(async () => deferred.resolve(snapshot()));
     assert.ok(document.querySelector('[aria-label="重新加载设置"]') === null, "加载成功后应移除重试入口");
     assert.equal(document.querySelectorAll('[role="radiogroup"][aria-label="外观"] input').length, 3);
@@ -683,7 +748,9 @@ test("关闭设置不读取新项目，首次打开其他项目不展示旧项�
     await h.overlay({ ...props, open: false, workspace: other });
     assert.deepEqual(reads, ["project"]);
     await h.overlay({ ...props, workspace: other });
-    assert.ok(!document.querySelector('input[type="radio"]'), "新项目不能短暂编辑旧项目缓存");
+    assert.equal(document.querySelector<HTMLInputElement>('input[value="system"]')?.checked, true, "全局外观可直接使用启动值");
+    assert.equal(document.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.disabled, true, "项目设置不能复用旧项目基线");
+    assert.equal(document.querySelector<HTMLSelectElement>('[aria-label="默认 Coding Agent"]')?.value, "");
     await h.React.act(async () => refresh.resolve({ ...snapshot(), projectId: "other", themePreference: "light" }));
     assert.equal(document.querySelector<HTMLInputElement>('input[type="radio"][value="light"]')?.checked, true);
   } finally { refresh.resolve(snapshot()); await h.close(); }
@@ -1031,6 +1098,23 @@ test("工具模型保存不阻塞独立分页，切页后仍接收保存结果",
     assert.equal(commits.length, 1, "分页切换不丢失已提交回执");
     assert.equal(commits[0]!.models.resolvedToolModel, "saved-tool");
   } finally { await h.React.act(async () => gate.resolve({ status: "rolled_back", snapshot: snapshot() })); await h.close(); }
+});
+
+test("快速对话首帧使用已有偏好，迟到的读取不能覆盖新保存", async () => {
+  const read = Promise.withResolvers<{ autoHideOnBlur: boolean; injectScreenContext: boolean; clickThrough: boolean }>();
+  const initial = { autoHideOnBlur: true, injectScreenContext: false, clickThrough: false };
+  const receipts: typeof initial[] = [];
+  const h = await harness({ quickChatSettings: () => read.promise, setQuickChatSettings: async (value: typeof initial) => value });
+  try {
+    const { SettingsQuickChat } = await import("../src/desktop/renderer/src/components/settings/SettingsQuickChat.js");
+    await h.render(h.React.createElement(SettingsQuickChat, { initialSettings: initial, onSettingsChanged: value => receipts.push(value) }));
+    assert.equal(document.querySelectorAll('[role="switch"]').length, 3);
+    assert.equal(document.querySelector(".settings-load-state"), null);
+    await h.click('[aria-label="失焦时自动隐藏"]');
+    await h.React.act(async () => read.resolve(initial));
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="失焦时自动隐藏"]')?.checked, false);
+    assert.deepEqual(receipts, [{ ...initial, autoHideOnBlur: false }]);
+  } finally { await h.close(); }
 });
 
 test("快速对话读取失败可重试，写入失败保留待保存值并提供明确重试", async () => {

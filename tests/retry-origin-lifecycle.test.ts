@@ -159,7 +159,7 @@ for (const delivery of ["queue", "steer"] as const) for (const reserve of [false
   const input = facts.find((event): event is Extract<SessionEvent, { type: "user_message" }> => event.type === "user_message" && !event.auditOnly && event.messageId === "queued-input");
   assert.equal(input?.parentMessageId, replies[0]?.messageId); assert.equal(replies[1]?.parentMessageId, "queued-input");
   const cold = f.make(); await cold.initialize(); const replay = await cold.resume(f.sessionId);
-  assert.ok(replay.messages.some(message => message.role === "user" && message.content === "FOLLOWUP_REQUEST"));
+  assert.ok(replay.messages.some(message => message.role === "user" && (message.originalContent ?? message.content) === "FOLLOWUP_REQUEST"));
   const original = replay.messages.find(message => message.role === "user" && message.originalContent === "ORIGINAL_REQUEST");
   assert.ok(original?.role === "user");
   assert.ok(original.emotionSnapshot, "the original exchange retains its persisted mood");

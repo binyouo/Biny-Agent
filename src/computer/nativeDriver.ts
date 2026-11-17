@@ -149,12 +149,15 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   static resolveBinary(): string {
-    // 开发期（源码树）与打包期（app.asar.unpacked）两条路径。
     const here = path.dirname(fileURLToPath(import.meta.url));
     const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
     // daemon 以 .app 形式发布：屏幕录制权限按 bundle 身份授予，裸二进制拿不到画面。
     // 开发期 out/native/computer-use 是指进 bundle 的软链，打包后要走 .app 内部路径。
     const inner = path.join("Contents", "MacOS", "computer-use");
+    // 安装包只能执行自身的 extraResources；asar 内的路径虽然可读，却不能 spawn。
+    if (resourcesPath && existsSync(path.join(resourcesPath, "app.asar"))) {
+      return path.join(resourcesPath, "native", "computer-use.app", inner);
+    }
     const candidates: string[] = [
       path.resolve(here, "../../out/native/computer-use"),
       path.resolve(here, "../../../out/native/computer-use"),

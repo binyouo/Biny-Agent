@@ -54,6 +54,7 @@ export interface DesktopSettingsDraft {
 export interface SettingsDraftContextValue {
   snapshot?: DesktopSettingsSnapshot;
   draft?: DesktopSettingsDraft;
+  appearanceDraft?: Pick<DesktopSettingsDraft, "themePreference" | "fontPreference">;
   /** Activity 是全局即时配置，无项目时也可读取和更新。 */
   activity?: DesktopActivitySettingsInput;
   loadError?: string;
@@ -108,7 +109,7 @@ export const SettingsDraftContext = createContext<SettingsDraftContextValue | un
  * 打开设置时能否复用上一次读到的快照。
  *
  * 可以复用 → 先拿缓存把界面渲染出来，后台再静默校验一次；
- * 不可以复用 → 老老实实显示加载态（首次打开、切了项目、用户主动重试后）。
+ * 不可以复用 → 重新读取当前范围；页面按字段可用性处理，不复用其他范围的配置。
  *
  * 抽成纯函数是为了能直接测：这个判断错了会让用户看到别的项目的设置。
  */

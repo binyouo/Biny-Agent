@@ -19,7 +19,7 @@ import type { SemanticMemoryRetriever } from "../src/agent/context/SemanticMemor
 import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
 import { cloneAgentMessages, messageReasoning, messageText } from "../src/agent/modelMessages.js";
-import { buildSystemPrompt, refreshRuntimeSystemPrompt, stableSystemPromptForCache, stripTransientTurnContext } from "../src/agent/prompts.js";
+import { runtimeToolContext, buildSystemPrompt, refreshRuntimeSystemPrompt, stableSystemPromptForCache, stripTransientTurnContext } from "../src/agent/prompts.js";
 import { BINY_AGENT_DIR_ENV, globalAgentDir, projectSessionsDir, projectStateDirName } from "../src/config/paths.js";
 import type { AgentConfig } from "../src/config/schema.js";
 import { defaultConfig } from "../src/config/schema.js";
@@ -58,7 +58,7 @@ class ContextTestModel {
   evidenceClaimId?: string;
   failCompaction = false;
   reportUsage = true;
-  summarySource = "m0";
+  summarySource?: string;
   readonly requests: AgentMessage[][] = [];
   readonly systemPrompts: Array<string | undefined> = [];
   memoryExtractionCalls = 0;
@@ -105,7 +105,7 @@ class ContextTestModel {
         "",
         "## Critical Context",
         "- Tests passed."
-      ].join("\n"), this.summarySource);
+      ].join("\n"), this.summarySource ?? prompt.match(/\[source (m\d+) kind=message role=user\]/u)?.[1] ?? "m0");
     }
     return "ok";
   }
@@ -203,8 +203,8 @@ function testConversationBoundaryPrompt(): void {
   assert.match(prompt, /Keep simple answers simple; do not add headings or lists to simple answers/u);
   assert.match(prompt, /simple greeting or casual exchange/u);
   assert.match(prompt, /casual chat gets a short direct reply and no workspace work/u);
-  assert.match(prompt, /Available tools:\n\(none\)/u);
-  assert.match(prompt, /only the latest user message as the active task/u);
+  assert.match(prompt, /Available tools are defined by the supplied tool schemas/u);
+  assert.match(prompt, /latest actual user request as the active task/u);
   assert.match(prompt, /smallest sequence that reaches the outcome/u);
   assert.match(prompt, /Before the first tool call for a task, output a brief, natural acknowledgment/u);
   assert.match(prompt, /Do not wait for the user to ask about progress/u);
@@ -226,37 +226,30 @@ function testConversationBoundaryPrompt(): void {
     promptSnippet: "Search the public web",
     promptGuidelines: ["Use WebSearch for current public information"]
   };
-  assert.match(buildSystemPrompt({ cwd: "/workspace", tools: [webTool] }), /Use WebSearch for current public information/u);
+  assert.doesNotMatch(prompt, /Use WebSearch for current public information/u);
+  assert.match(runtimeToolContext([webTool]), /Use WebSearch for current public information/u);
   const zvecTool = {
     name: "mcp_zvec_grep_zvec_grep_search",
     promptSnippet: "Search indexed workspace content by meaning",
     promptGuidelines: ["Use zvec_grep_search for semantic workspace discovery"]
   };
-  const zvecPrompt = buildSystemPrompt({ cwd: "/workspace", tools: [zvecTool] });
+  const zvecPrompt = runtimeToolContext([zvecTool]);
   assert.match(zvecPrompt, /Search indexed workspace content by meaning/u);
   assert.match(zvecPrompt, /Use zvec_grep_search for semantic workspace discovery/u);
-  assert.doesNotMatch(
-    buildSystemPrompt({ cwd: "/workspace", tools: [{ name: "custom_tool" }] }),
-    /- custom_tool:/u
-  );
   const refreshed = refreshRuntimeSystemPrompt(buildSystemPrompt({
     cwd: "/workspace",
     extensionPrompt: "static capability",
-    tools: [webTool]
-  }), [{
-    name: "Bash",
-    promptSnippet: "Run a finite command",
-    promptGuidelines: ["Use Bash only for finite commands"]
-  }]);
+  }));
   assert.match(refreshed, /static capability/u);
-  assert.match(refreshed, /Use Bash/u);
+  assert.doesNotMatch(refreshed, /Use WebSearch/u);
+  assert.match(runtimeToolContext([{ name: "Bash", promptGuidelines: ["Use Bash only for finite commands"] }]), /Use Bash/u);
 }
 
 async function testPromptEpochAndCanonicalPrefix(): Promise<void> {
   const toolA = { name: "alpha", description: "Alpha", parameters: { type: "object" as const }, execute: async () => ({ content: [] }) };
   const toolB = { name: "beta", description: "Beta", parameters: { type: "object" as const }, execute: async () => ({ content: [] }) };
-  const first = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "project-a", tools: [toolB, toolA] });
-  const second = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "project-b", tools: [toolA, toolB] });
+  const first = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "project-a" });
+  const second = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "project-b" });
   assert.notEqual(stableSystemPromptForCache(first), stableSystemPromptForCache(second));
 
   await withTempWorkspace(async (workspaceRoot) => {
@@ -1000,7 +993,7 @@ async function testCheckpointIsResumeTruthSource(): Promise<void> {
     assert.equal(failedReplay.contextState?.compactionFailure?.kind, "provider_error", "失败后必须先落盘冷却信息");
     assert.equal(failedReplay.messages.length, 2, "失败不能推进压缩边界");
     firstProvider.failCompaction = false;
-    assert.match(await firstAgent.compactConversation(), /Compacted 2 messages/u);
+    assert.match(await firstAgent.compactConversation(), /Compacted 5 messages/u, "workspace, date and tool guidance count toward the compacted context");
     await firstAgent.close();
 
     const compactedReplay = await replaySession(firstRecorder.filePath);
@@ -1122,7 +1115,7 @@ async function testCheckpointPersistenceFailureStopsSession(): Promise<void> {
       config.context.memory.generateMemories = false;
       const recorder = new FaultRecorder(workspaceRoot, `fault-${phase}-${mode}`);
       config.context.maxInputTokens = 8_000;
-      config.context.compaction.keepRecentTokens = 1000; // 手动场景让整段含心境的短历史进入 checkpoint。
+      config.context.compaction.keepRecentTokens = mode === "manual" ? 20_000 : 1_000; // 手动场景整体压缩，完整请求前缀也纳入材料。
       const provider = new ContextTestModel();
       // 自动压缩场景不能回报虚构的零 input usage，否则有效锚点会正确抑制估算触发。
       provider.reportUsage = mode !== "automatic";

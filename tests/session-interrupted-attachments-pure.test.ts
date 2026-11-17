@@ -10,6 +10,7 @@ const parse = (file: string) => ts.createSourceFile(file, readFileSync(file, "ut
 const source = parse("src/agent/AgentSession.ts");
 const tree = parse("src/session/messageTree.ts");
 const replaySource = parse("src/session/replay.ts");
+const runtimeSource = parse("src/agent/context/runtimeContext.ts");
 const agent = source.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === "AgentSession");
 assert.ok(agent);
 const hydrateMethod = agent.members.find((node): node is ts.MethodDeclaration => ts.isMethodDeclaration(node) && node.name.getText(source) === "rehydrateSessionMessages");
@@ -23,7 +24,7 @@ const treeFunctions = extract(tree, ["sessionMessageMetadataForIds", "mergeMessa
   "activeSessionMessageIds", "compatibleSessionSelections", "activeSessionEventsForPath"]);
 const replayFunctions = extract(replaySource, ["uncoveredCanonicalToolCalls", "projectSessionConversation", "completeCanonicalStepResults",
   "replayReasoningParts", "normalizeToolArguments", "stringifyResult", "applyContextCheckpoint"]);
-const script = `${treeFunctions}\n${replayFunctions}\nclass Hydrator { ${hydrateMethod.getText(source).replace(/^private /u, "")} }
+const script = `${treeFunctions}\n${replayFunctions}\n${extract(runtimeSource, ["isRuntimeContext"])}\nclass Hydrator { ${hydrateMethod.getText(source).replace(/^private /u, "")} }
 ({ Hydrator, activeSessionEventsForPath, prepare(events, start) {
   const projection = projectSessionConversation(activeSessionEventsForPath(events), {}, events);
   const kept = applyContextCheckpoint(projection, { firstKeptMessageIndex: start });

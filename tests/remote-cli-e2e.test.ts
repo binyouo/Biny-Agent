@@ -46,7 +46,7 @@ test("native pairing uses the built CLI, shared Host, permission and persisted s
     let raw = "";
     for await (const chunk of request) raw += String(chunk);
     const body = JSON.parse(raw);
-    const latestUser = (body.messages as Array<{ role: string; content: unknown }>).filter(message => message.role === "user").at(-1);
+    const latestUser = (body.messages as Array<{ role: string; content: unknown }>).filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1);
     if (Array.isArray(body.tools) && JSON.stringify(latestUser?.content ?? "").includes("cancel-probe")) {
       held = response;
       response.writeHead(200, { "content-type": "text/event-stream" });

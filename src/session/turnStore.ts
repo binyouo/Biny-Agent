@@ -214,6 +214,8 @@ function isAgentMessage(value: unknown): value is AgentMessage {
         && typeof content.arguments === "object"
         && content.arguments !== null
         && !Array.isArray(content.arguments)
+        && (content.viaToolCall === undefined || content.viaToolCall === true)
+        && (content.geminiArgumentsJson === undefined || typeof content.geminiArgumentsJson === "string")
         && (content.providerMetadata === undefined
           || typeof content.providerMetadata === "object" && content.providerMetadata !== null
           && !Array.isArray(content.providerMetadata));

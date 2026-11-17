@@ -210,8 +210,8 @@ export function SettingsMemory({
     try {
       setEmbeddingStatus(await onLoadEmbeddingStatus());
       setEmbeddingError(undefined);
-    } catch (cause) {
-      setEmbeddingError(errorMessage(cause));
+    } catch {
+      setEmbeddingError("暂时无法读取状态，请重试。");
     }
   }, [onLoadEmbeddingStatus, workspaceAvailable]);
 
@@ -440,8 +440,8 @@ export function SettingsMemory({
       setEmbeddingStatus(await onDownloadEmbeddingModel(model));
       setEmbeddingError(undefined);
       onNotify("本地模型已就绪");
-    } catch (cause) {
-      setEmbeddingError(errorMessage(cause));
+    } catch {
+      setEmbeddingError("嵌入模型下载失败，请重试。");
     } finally {
       setEmbeddingWorking(undefined);
     }
@@ -452,8 +452,8 @@ export function SettingsMemory({
       const result = await onCancelEmbeddingDownload(model);
       setEmbeddingStatus(result.status);
       onNotify(result.cancelled ? "取消" : "当前没有正在进行的下载");
-    } catch (cause) {
-      setEmbeddingError(errorMessage(cause));
+    } catch {
+      setEmbeddingError("取消模型下载失败，请重试。");
     } finally {
       setEmbeddingWorking(undefined);
     }
@@ -466,8 +466,8 @@ export function SettingsMemory({
       setEmbeddingStatus(await onRebuildEmbeddingIndex());
       setEmbeddingError(undefined);
       onNotify("嵌入向量重建完成！");
-    } catch (cause) {
-      setEmbeddingError(errorMessage(cause));
+    } catch {
+      setEmbeddingError("嵌入向量重建失败，请重试。");
     } finally {
       setEmbeddingWorking(undefined);
     }
@@ -478,8 +478,8 @@ export function SettingsMemory({
       const result = await onCancelEmbeddingRebuild();
       setEmbeddingStatus(result.status);
       onNotify(result.cancelled ? "取消" : "当前没有正在进行的更新");
-    } catch (cause) {
-      setEmbeddingError(errorMessage(cause));
+    } catch {
+      setEmbeddingError("取消嵌入向量重建失败，请重试。");
     } finally {
       setEmbeddingWorking(undefined);
     }
@@ -943,7 +943,7 @@ export function SettingsMemory({
               <button className="settings-action settings-text-action text-button" disabled={!canRebuild || embeddingWorking !== undefined || sessionRunning} onClick={() => { void rebuildEmbedding(); }} type="button">立即重建</button>
             </div> : null}
             {embeddingOperation?.kind === "download" && embeddingOperation.progress?.progress !== undefined ? <div className="activity-memory-embedding-progress" role="status">正在下载模型… {Math.round(embeddingOperation.progress.progress * 100)}%</div> : null}
-            {embeddingError ? <div aria-live="polite" className="activity-memory-embedding-error"><span>暂时无法读取状态，请重试。</span><button className="settings-action settings-text-action text-button" disabled={embeddingWorking !== undefined} onClick={() => { void refreshEmbeddingStatus(); }} type="button">重试</button></div> : null}
+            {embeddingError ? <div aria-live="polite" className="activity-memory-embedding-error"><span>{embeddingError}</span><button className="settings-action settings-text-action text-button" disabled={embeddingWorking !== undefined} onClick={() => { void refreshEmbeddingStatus(); }} type="button">重试</button></div> : null}
             {embeddingNeedsDownload && selectedEmbeddingModel.kind === "local" ? (downloadingSelected ? <button className="settings-action settings-text-action text-button" onClick={() => { void cancelEmbeddingDownload(selectedEmbeddingModel.model); }} type="button">取消</button> : <button className="settings-action settings-text-action text-button" disabled={embeddingWorking !== undefined || sessionRunning} onClick={() => { void downloadEmbedding(selectedEmbeddingModel.model); }} type="button">下载模型</button>) : null}
             {rebuilding ? <div className="activity-memory-embedding-progress" role="status">正在重建嵌入向量... <button className="settings-action settings-text-action text-button" onClick={() => { void cancelEmbeddingRebuild(); }} type="button">取消</button></div> : null}
             <div className="activity-memory-embedding-footer">

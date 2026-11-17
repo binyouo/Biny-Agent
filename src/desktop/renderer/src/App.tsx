@@ -25,6 +25,7 @@ import type {
   DesktopGitBranch,
   DesktopMenuAction,
   DesktopProject,
+  DesktopQuickChatSettings,
   DesktopRuntimeMutation,
   DesktopSessionDocument,
   DesktopSessionMenuAction,
@@ -176,6 +177,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [searchOpen, setSearchOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [quickChatSettings, setQuickChatSettings] = useState<DesktopQuickChatSettings>();
   const [settingsTargetTab, setSettingsTargetTab] = useState<SettingsTab>();
   const [temporalSourceTarget, setTemporalSourceTarget] = useState<{ sessionId: string; messageId: string }>();
   const [messageReferencesTarget, setMessageReferencesTarget] = useState<{ projectId: string; uri: string }>();
@@ -229,8 +231,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
 
   const openSettings = useCallback((targetTab?: SettingsTab): void => {
     if (!settingsEnabled) return;
-    // 点击即预热快照 IPC，弹窗挂载时数据通常已就绪或在路上；dialog 绘制本身
-    // 也要一帧时间，足以盖掉大部分可见加载态。设置本身不是静态的，仍会后台校验。
+    // 直达页与 Provider 复用同一读取；固定控件的首帧不依赖预热是否完成。
     if (targetTab && settingsPageNeedsSnapshot(targetTab)) warmSettingsSnapshot(projectRef.current, selectedRef.current);
     setSettingsTargetTab(targetTab);
     setSettingsOpen(true);
@@ -733,6 +734,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     void window.biny.bootstrap().then(async (bootstrap) => {
       if (!active) return;
       setVersion(bootstrap.version);
+      setQuickChatSettings(bootstrap.quickChatSettings);
       setProjects(bootstrap.projects);
       sessionTreePages.replaceAll(bootstrap.sidebarSessions, bootstrap.projects.map(project => project.id));
         resetSessionRootPages(bootstrap.workspace);
@@ -2278,6 +2280,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
           />
           <NewProjectDialog open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={submitNewProject} />
           <SettingsOverlay
+            quickChatSettings={quickChatSettings}
+            onQuickChatSettingsChanged={setQuickChatSettings}
             closeRequest={settingsCloseRequest}
             projects={projects}
             modelSetupRequired={Boolean(workspace?.requiresModelConfiguration)}

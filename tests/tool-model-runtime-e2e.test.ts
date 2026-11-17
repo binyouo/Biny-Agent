@@ -30,8 +30,11 @@ async function testAutomaticToolModelFallback(hasHealthyCandidate: boolean): Pro
         sendToolCall(response, "discover-notes", "ToolSearch", { query: "inspect the contents of a local note" });
       } else if (mainRequests.length === 2) {
         const tools = body.tools as Array<{ function?: { name?: string } }>;
-        assert.ok(tools.some((tool) => tool.function?.name === "Read"), "successful discovery must disclose the registered tool");
-        sendToolCall(response, "inspect-note", "Read", { path: "note.txt" });
+        assert.ok(tools.some(tool => tool.function?.name === "ToolCall"));
+        const reply = (body.messages as Array<{ role: string; content: string }>).findLast(message => message.role === "tool");
+        const definitions = JSON.parse(reply!.content).deferredTools as Array<{ name: string; parameters: { required: string[] } }>;
+        assert.ok(definitions.find(tool => tool.name === "Read")?.parameters.required.includes("path"), "successful discovery must disclose the registered input schema");
+        sendToolCall(response, "inspect-note", "ToolCall", { name: "Read", arguments: { path: "note.txt" } });
       } else {
         assert.match(JSON.stringify(body.messages), /fixture-note-content/u, "main-model continuation must receive the actual tool output");
         sendText(response, "The local note was inspected.");

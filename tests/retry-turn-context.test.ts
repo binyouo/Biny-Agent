@@ -48,6 +48,7 @@ async function fixture(t: TestContext, toolSteps = 0) {
   config.activity.enabled = false;
   config.permission.mode = "full-access";
   const requests: Array<{ systemPrompt: string; messages: AgentMessage[] }> = [];
+  const summaries: AgentMessage[][] = [];
   const registry = new ToolRegistry();
   const effects = path.join(root, "effects.txt");
   const effectSchema = z.object({ label: z.string() });
@@ -66,6 +67,20 @@ async function fixture(t: TestContext, toolSteps = 0) {
   const model: AgentModel = testModel({
     provider: "fixture", modelId: "retry-turn-context", runtime: "builtin-llama.cpp", dataResidency: "local", supportsTools: true,
     stream: async (context, options) => {
+      if (options?.requestContext?.operation === "compaction") {
+        summaries.push(structuredClone(context.messages));
+        return (async function* (): AsyncGenerator<ModelStreamEvent> {
+          yield { type: "text-delta", text: [
+            "## Goal", "- Preserve the task. <!-- evidence:m1 -->",
+            "## Constraints & Preferences", "- (none recorded)",
+            "## Progress", "### Done", "- (none verified)", "### In Progress", "- (none recorded)", "### Blocked", "- (unknown)",
+            "## Key Decisions", "- (none recorded)", "## Errors & Fixes", "- (none recorded)",
+            "## All User Messages", "- Preserve the task. <!-- evidence:m1 -->",
+            "## Next Steps", "- (none recorded)", "## Critical Context", "- (none recorded)"
+          ].join("\n") };
+          yield { type: "finish", reason: "stop" };
+        })();
+      }
       assert.equal(options?.requestContext?.operation, "agent");
       requests.push({ systemPrompt: context.systemPrompt ?? "", messages: structuredClone(context.messages) });
       const step = requests.length;
@@ -82,7 +97,7 @@ async function fixture(t: TestContext, toolSteps = 0) {
     permissionManager: new PermissionManager({ ...config.permission, source: "test" }) });
   await session.initialize();
   return {
-    session, recorder, requests, effects,
+    session, recorder, requests, effects, summaries,
     longPath: path.join(globalRoot, "MEMORY.md"),
     dayPath: (day: string) => path.join(globalRoot, "memory", `${day}.md`),
     text: () => JSON.stringify(requests.at(-1)?.messages),
@@ -106,9 +121,17 @@ function userText(message: AgentMessage): string {
   return typeof message.content === "string" ? message.content : message.content.filter(p => p.type === "text").map(p => p.text).join("\n");
 }
 
+function isRuntimeMessage(message: AgentMessage): boolean {
+  return isDateContext(message) || userText(message).startsWith("<biny_runtime_context");
+}
+
+function isDateContext(message: AgentMessage): boolean {
+  return userText(message).startsWith("<biny_date_context>");
+}
+
 function assertFreshContext(text: string): void {
   assert.match(text, /LONG_NOTE_CURRENT/u, "fresh file memory must reach the actual retry provider request");
-  assert.match(text, /Authoritative Local DateTime: 2026-10-08/u);
+  assert.match(text, /Authoritative local date: 2026-10-08/u);
   assert.match(text, /Today's Notes \(2026-10-08\)/u);
   assert.match(text, /Yesterday's Notes \(2026-10-07\)/u);
   assert.match(text, /DAY_EIGHT_CURRENT/u);
@@ -116,6 +139,47 @@ function assertFreshContext(text: string): void {
   assert.doesNotMatch(text, /LONG_NOTE_ORIGINAL|DAY_SIX_OLD/u);
   assert.equal(text.split("FILE-BASED MEMORY").length - 1, 1);
 }
+
+test("date updates append across tool steps and ordinary turns without changing earlier request messages", { timeout: 20_000 }, async t => {
+  const f = await fixture(t, 2);
+  for await (const event of f.session.prompt("完成两次记录", { emotionAnalysis: false })) {
+    assert.notEqual(event.type, "error");
+    if (event.type === "tool.completed" && f.requests.length === 1) {
+      t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
+    }
+  }
+  assert.equal(f.requests.length, 3);
+  const [first, second, third] = f.requests;
+  assert.doesNotMatch(first!.systemPrompt, /Authoritative local date|Authoritative Local DateTime/u);
+  assert.equal(second!.systemPrompt, first!.systemPrompt);
+  assert.deepEqual(second!.messages.slice(0, first!.messages.length), first!.messages);
+  const dateTexts = (messages: AgentMessage[]) => messages.map(userText).filter(text => text.includes("Authoritative local date:"));
+  assert.equal(dateTexts(first!.messages).length, 1);
+  assert.match(dateTexts(first!.messages)[0]!, /2026-10-07/u);
+  assert.equal(dateTexts(second!.messages).length, 2);
+  assert.match(dateTexts(second!.messages)[1]!, /2026-10-08/u);
+  assert.deepEqual(dateTexts(third!.messages), dateTexts(second!.messages));
+  await drain(f.session.prompt("再总结一下", { emotionAnalysis: false }));
+  assert.deepEqual(dateTexts(f.requests.at(-1)!.messages), dateTexts(second!.messages));
+  assert.equal(await readFile(f.effects, "utf8"), "effect-1\neffect-2\n");
+});
+
+test("a real compaction removes old date context and the next request restores it once", { timeout: 20_000 }, async t => {
+  const f = await fixture(t);
+  await drain(f.session.prompt("Preserve the task. ORIGINAL_DATE_TURN", { emotionAnalysis: false }));
+  assert.equal(f.requests[0]!.messages.filter(isDateContext).length, 1);
+  assert.match(await f.session.compactConversation(), /Compacted 5 messages/u);
+  assert.equal(f.summaries.length, 1);
+  assert.match(JSON.stringify(f.summaries), /Runtime date context/u);
+  assert.ok((await f.events()).some(event => event.type === "context_checkpoint"));
+  await drain(f.session.prompt("继续", { emotionAnalysis: false }));
+  assert.doesNotMatch(f.text(), /ORIGINAL_DATE_TURN/u);
+  const date = f.requests.at(-1)!.messages.filter(isDateContext);
+  assert.equal(date.length, 1, "compaction removes the previous date, so it must be reintroduced");
+  assert.match(userText(date[0]!), /Authoritative local date: 2026-10-07/u);
+  await drain(f.session.prompt("再继续", { emotionAnalysis: false }));
+  assert.deepEqual(f.requests.at(-1)!.messages.filter(isDateContext), date);
+});
 
 for (const action of ["continueInterruptedTurn", "startInterruptedFollowup"] as const) {
   test(`${action} refreshes the local clock after reopening without repeating completed tools`, { timeout: 20_000 }, async (t) => {
@@ -133,12 +197,12 @@ for (const action of ["continueInterruptedTurn", "startInterruptedFollowup"] as 
     await f.session.resume(f.recorder.sessionId);
     await drain(f.session[action]({ emotionAnalysis: false }));
     const request = f.requests.at(-1)!;
-    assert.match(request.systemPrompt, /Authoritative local date: 2026-10-09/u);
-    assert.match(request.systemPrompt, /Weekday: Friday/u);
-    assert.match(request.systemPrompt, /Timezone: UTC\+5:45/u);
-    assert.equal(request.systemPrompt.split("DATE AWARENESS (CRITICAL)").length - 1, 1);
-    assert.match(f.text(), /Authoritative Local DateTime: 2026-10-09/u);
-    assert.doesNotMatch(f.text(), /Authoritative Local DateTime: 2026-10-07/u);
+    assert.match(f.text(), /Authoritative local date: 2026-10-09/u);
+    assert.match(f.text(), /Weekday: Friday/u);
+    assert.match(f.text(), /Timezone: UTC\+5:45/u);
+    assert.doesNotMatch(request.systemPrompt, /DATE AWARENESS|biny_date_context/u);
+    assert.match(f.text(), /Authoritative local date: 2026-10-09/u);
+    assert.match(userText(request.messages.findLast(isDateContext)!), /2026-10-09/u);
     assert.match(f.text(), /Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai/u);
     assert.equal(request.messages.filter(message => message.role === "toolResult").length, 1);
     const result = request.messages.find(message => message.role === "toolResult");
@@ -149,7 +213,7 @@ for (const action of ["continueInterruptedTurn", "startInterruptedFollowup"] as 
     assert.equal(await readFile(f.effects, "utf8"), "effect-1\n");
     const events = await readSessionEvents(f.recorder.filePath);
     assert.equal(events.filter(event => event.type === "user_message" && !event.auditOnly).length, 1);
-    assert.doesNotMatch(JSON.stringify(events), /Authoritative Local DateTime|DATE AWARENESS/u);
+    assert.doesNotMatch(JSON.stringify(events), /Authoritative local date|DATE AWARENESS/u);
   });
 }
 
@@ -158,10 +222,10 @@ test("live and reopened chat preserve original send time across local midnight a
   await drain(f.session.prompt("明天处理", { emotionAnalysis: false }));
   t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
   await drain(f.session.prompt("今天呢？", { emotionAnalysis: false }));
-  const users = f.requests.at(-1)!.messages.filter(message => message.role === "user");
+  const users = f.requests.at(-1)!.messages.filter(message => message.role === "user" && !isRuntimeMessage(message));
   assert.match(userText(users[0]!), /^\[Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai; message time is not event\/due\/completion time\.\]/u);
   assert.match(userText(users[1]!), /^\[Message sent-at: 2026-10-07T16:00:00\.000Z; original timezone: Asia\/Shanghai;/u);
-  assert.match(userText(users[1]!), /Authoritative Local DateTime: 2026-10-08/u);
+  assert.match(f.text(), /Authoritative local date: 2026-10-08/u);
   assert.match(f.requests.at(-1)!.systemPrompt, /Resolve "today\/tomorrow\/next Monday" against the original message's date\/timezone/u);
   const events = await f.events();
   assert.deepEqual(events.filter(e => e.type === "user_message").map(e => e.content), ["明天处理", "今天呢？"]);
@@ -169,7 +233,7 @@ test("live and reopened chat preserve original send time across local midnight a
   process.env.TZ = "America/Los_Angeles";
   await f.session.resume(f.recorder.sessionId);
   await drain(f.session.prompt("回顾一下", { emotionAnalysis: false }));
-  const restored = f.requests.at(-1)!.messages.filter(message => message.role === "user");
+  const restored = f.requests.at(-1)!.messages.filter(message => message.role === "user" && !isRuntimeMessage(message));
   assert.match(userText(restored[0]!), /2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai/u);
   assert.match(userText(restored[1]!), /2026-10-07T16:00:00\.000Z; original timezone: Asia\/Shanghai/u);
   assert.match(userText(restored[2]!), /original timezone: America\/Los_Angeles/u);
@@ -182,7 +246,7 @@ test("admitted input keeps receipt time when execution starts on the next local 
   t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
   await drain(f.session.prompt("明天处理", { ...identity, emotionAnalysis: false }));
   assert.match(f.text(), /Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai/u);
-  assert.match(f.text(), /Authoritative Local DateTime: 2026-10-08/u);
+  assert.match(f.text(), /Authoritative local date: 2026-10-08/u);
 });
 
 test("editing a user message uses the new version's send time", { timeout: 20_000 }, async (t) => {
@@ -237,9 +301,9 @@ for (const targetRole of ["assistant", "user"] as const) {
     t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
     await drain(f.session.retry(target.messageId, { emotionAnalysis: false }));
     assert.equal(f.requests.length, 3);
-    assert.match(f.requests.at(-1)!.systemPrompt, /Authoritative local date: 2026-10-08/u);
+    assert.match(f.text(), /Authoritative local date: 2026-10-08/u);
     assertFreshContext(f.text());
-    const users = f.requests.at(-1)!.messages.filter(message => message.role === "user");
+    const users = f.requests.at(-1)!.messages.filter(message => message.role === "user" && !isRuntimeMessage(message));
     assert.equal(users.length, 2);
     assert.ok(userText(users[0]!).startsWith("[Message sent-at: 2026-10-07T15:59:59.000Z; original timezone: Asia/Shanghai; message time is not event/due/completion time.]\n\n"));
     assert.match(userText(users[0]!), /<biny_emotion_history>[\s\S]*cheerful[\s\S]*<\/biny_emotion_history>/u);
@@ -250,7 +314,7 @@ for (const targetRole of ["assistant", "user"] as const) {
     assert.equal(users[1]?.originalContent, undefined, "internal source metadata is not sent to the provider");
     const persisted = await f.events();
     assert.deepEqual(persisted.filter(e => e.type === "user_message").map(e => e.content), [input, input]);
-    assert.doesNotMatch(JSON.stringify(persisted), /LONG_NOTE_|DAY_(SIX|SEVEN|EIGHT)_|Authoritative Local DateTime/u);
+    assert.doesNotMatch(JSON.stringify(persisted), /LONG_NOTE_|DAY_(SIX|SEVEN|EIGHT)_|Authoritative local date/u);
     assert.doesNotMatch(f.requests.at(-1)!.systemPrompt, /LONG_NOTE_/u);
   });
 }
@@ -262,13 +326,13 @@ test("retrying the final assistant after tool steps refreshes the source user in
   await drain(f.session.prompt(input, { emotionAnalysis: false }));
   assert.equal(f.requests.length, 3);
   assert.equal(await readFile(f.effects, "utf8"), "effect-1\neffect-2\n");
-  const originalRequest = f.requests.at(-1)!.messages;
+  const originalRequest = f.requests.at(-1)!.messages.filter(message => !isRuntimeMessage(message));
   assert.deepEqual(originalRequest.map(message => message.role), ["user", "assistant", "toolResult", "assistant", "toolResult"]);
   const target = [...await f.events()].reverse().find(e => e.type === "agent_message" && e.message.role === "assistant");
   assert.ok(target?.type === "agent_message" && target.messageId);
   await writeFile(f.longPath, "# MEMORY.md\n\nLONG_NOTE_CURRENT");
   await drain(f.session.retry(target.messageId, { emotionAnalysis: false }));
-  const retried = f.requests.at(-1)!.messages;
+  const retried = f.requests.at(-1)!.messages.filter(message => !isRuntimeMessage(message));
   assert.match(f.text(), /LONG_NOTE_CURRENT/u);
   assert.doesNotMatch(f.text(), /LONG_NOTE_ORIGINAL/u);
   assert.deepEqual(retried.map(message => message.role), ["user", "assistant", "toolResult", "assistant", "toolResult"]);
@@ -277,7 +341,7 @@ test("retrying the final assistant after tool steps refreshes the source user in
   assert.equal(await readFile(f.effects, "utf8"), "effect-1\neffect-2\n", "retry must not replay either completed side effect");
   const persisted = await f.events();
   assert.equal(persisted.filter(e => e.type === "user_message").length, 1);
-  assert.doesNotMatch(JSON.stringify(persisted), /LONG_NOTE_|Authoritative Local DateTime/u);
+  assert.doesNotMatch(JSON.stringify(persisted), /LONG_NOTE_|Authoritative local date/u);
 });
 
 test("successive ordinary turns read same-size same-mtime edits, deletion and local-midnight rotation", { timeout: 20_000 }, async (t) => {
@@ -303,19 +367,20 @@ test("successive ordinary turns read same-size same-mtime edits, deletion and lo
   assert.match(f.text(), /LONG_NOTE_B/u);
   assert.match(f.text(), /DAY_SEVEN_B/u);
   assert.match(f.text(), /DAY_SIX_B/u);
-  assert.doesNotMatch(f.text(), /LONG_NOTE_A|DAY_SEVEN_A|DAY_SIX_A/u);
+  assert.doesNotMatch(userText(f.requests.at(-1)!.messages.filter(message => message.role === "user" && !isRuntimeMessage(message)).at(-1)!), /LONG_NOTE_A|DAY_SEVEN_A|DAY_SIX_A/u);
   await rm(f.longPath);
   await rm(today);
   await drain(f.session.prompt("third", { emotionAnalysis: false }));
   assert.match(f.text(), /DAY_SIX_B/u);
-  assert.doesNotMatch(f.text(), /LONG_NOTE_|DAY_SEVEN_|Today's Notes/u);
+  assert.doesNotMatch(userText(f.requests.at(-1)!.messages.filter(message => message.role === "user" && !isRuntimeMessage(message)).at(-1)!), /LONG_NOTE_|DAY_SEVEN_|Today's Notes/u);
   await writeFile(f.longPath, "LONG_NOTE_CURRENT");
   await writeFile(today, "# 2026-10-07\n\n## 聊天摘要\n\nDAY_SEVEN_CURRENT");
   await writeFile(f.dayPath("2026-10-08"), "# 2026-10-08\n\n## 聊天摘要\n\nDAY_EIGHT_CURRENT");
   t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
   await drain(f.session.prompt("fourth", { emotionAnalysis: false }));
-  assertFreshContext(f.text());
-  assert.doesNotMatch(f.text(), /DAY_SIX_B/u);
+  const latest = userText(f.requests.at(-1)!.messages.filter(message => message.role === "user" && !isRuntimeMessage(message)).at(-1)!);
+  assertFreshContext(latest + "\n" + f.requests.at(-1)!.messages.filter(isDateContext).map(userText).at(-1));
+  assert.doesNotMatch(latest, /DAY_SIX_B/u);
 });
 
 
@@ -326,7 +391,7 @@ for (const action of ["retry", "edit"] as const) {
     await writeFile(f.longPath, "# MEMORY.md\n\nLONG_MEMORY_BOUNDARY_WITNESS");
     await writeFile(f.dayPath("2026-10-07"), "# 2026-10-07\n\n## 聊天摘要\n\nDAY_BOUNDARY_WITNESS");
     await drain(f.session.prompt(input, { emotionAnalysis: false }));
-    const before = structuredClone(f.requests.at(-1)!.messages);
+    const before = structuredClone(f.requests.at(-1)!.messages.filter(message => !isRuntimeMessage(message)));
     const events = await f.events();
     const sourceUser = events.find(event => event.type === "user_message" && !event.auditOnly);
     assert.ok(sourceUser?.type === "user_message" && sourceUser.messageId);
@@ -343,7 +408,7 @@ for (const action of ["retry", "edit"] as const) {
     let completed = false;
     for await (const event of stream) {
       if (event.type === "context.updated" && !crossed) {
-        // retry has built its real turn bundle but has not entered runTurn's clock refresh yet.
+        // retry has built its real turn bundle but has not entered the provider request's clock check yet.
         crossed = true;
         t.mock.timers.setTime(Date.parse("2026-10-07T16:00:00Z"));
       }
@@ -354,14 +419,13 @@ for (const action of ["retry", "edit"] as const) {
     assert.deepEqual(errors, []);
     assert.equal(completed, true);
     const request = f.requests.at(-1)!;
-    const user = request.messages.find(message => message.role === "user");
+    const user = request.messages.find(message => message.role === "user" && !isRuntimeMessage(message));
     assert.ok(user?.role === "user");
     const text = userText(user);
-    assert.equal(text.split("Authoritative Local DateTime:").length - 1, 1);
-    assert.match(text, /Authoritative Local DateTime: 2026-10-08/u);
-    assert.doesNotMatch(text, /Authoritative Local DateTime: 2026-10-07/u);
-    assert.match(request.systemPrompt, /Authoritative local date: 2026-10-08/u);
-    assert.equal(request.systemPrompt.split("DATE AWARENESS (CRITICAL)").length - 1, 1);
+    assert.equal(request.messages.filter(isDateContext).length, 1);
+    assert.match(f.text(), /Authoritative local date: 2026-10-08/u);
+    assert.doesNotMatch(text, /Authoritative local date: 2026-10-07/u);
+    assert.doesNotMatch(request.systemPrompt, /DATE AWARENESS|biny_date_context/u);
     assert.equal(text.split("FILE-BASED MEMORY").length - 1, 1);
     assert.equal(text.split("LONG_MEMORY_BOUNDARY_WITNESS").length - 1, 1);
     assert.equal(text.split("DAY_BOUNDARY_WITNESS").length - 1, 1);
@@ -372,12 +436,12 @@ for (const action of ["retry", "edit"] as const) {
       ? /Message sent-at: 2026-10-07T16:00:00\.000Z; original timezone: Asia\/Shanghai/u
       : /Message sent-at: 2026-10-07T15:59:59\.000Z; original timezone: Asia\/Shanghai/u);
     if (action === "retry") {
-      assert.equal(JSON.stringify(request.messages.slice(1)), JSON.stringify(before.slice(1)), "the two completed tool steps remain unchanged");
+      assert.equal(JSON.stringify(request.messages.filter(message => !isRuntimeMessage(message)).slice(1)), JSON.stringify(before.slice(1)), "the two completed tool steps remain unchanged");
       assert.equal(await readFile(f.effects, "utf8"), "effect-1\neffect-2\n");
     }
     const persisted = await f.events();
     assert.deepEqual(persisted.filter(event => event.type === "user_message" && !event.auditOnly).map(event => event.content),
       action === "edit" ? [input, replacement] : [input]);
-    assert.doesNotMatch(JSON.stringify(persisted), /LONG_MEMORY_BOUNDARY_WITNESS|DAY_BOUNDARY_WITNESS|Authoritative Local DateTime/u);
+    assert.doesNotMatch(JSON.stringify(persisted), /LONG_MEMORY_BOUNDARY_WITNESS|DAY_BOUNDARY_WITNESS|Authoritative local date/u);
   });
 }
