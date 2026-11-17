@@ -1815,9 +1815,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const retry = window.biny.retryPrompt;
     if (typeof retry !== "function") throw new Error(desktopApiVersionMismatchMessage);
     try {
-      const receipt = await retry(projectId, sessionId, targetMessageId, input,
+      await retry(projectId, sessionId, targetMessageId, input,
         attachments.map((attachment) => ({ ...attachment, size: attachment.size ?? 0 })), idempotencyKey);
-      setSelectedSessionId(receipt.sessionId);
+      // Retry belongs to the existing session; its receipt must not change navigation.
+      // A newer selection may already be visible while the host accepts this run.
     } catch (error) {
       if (projectRef.current === projectId && selectedRef.current === sessionId) {
         await refreshRuntimeFailure(projectId, sessionId).catch(() => undefined);
