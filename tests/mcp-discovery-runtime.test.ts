@@ -116,10 +116,13 @@ const provider = createServer((request, response) => {
       assert.equal(names.includes("mcp_notes_list"), false);
       sendToolCall(response, "discover-records", "ToolSearch", { query: "mcp_notes_list", type: "mcp" });
     } else if (mainRequests.length === 3) {
-      assert.ok(names.includes("mcp_notes_list"), "The same turn must receive the freshly discovered MCP schema");
-      const discovered = (body.tools as Array<{ function?: { name?: string; parameters?: unknown } }>).find((tool) => tool.function?.name === "mcp_notes_list");
-      assert.deepEqual(discovered?.function?.parameters, inputSchema);
-      sendToolCall(response, "read-records", "mcp_notes_list", { limit: 2 });
+      assert.ok(names.includes("ToolCall"));
+      assert.equal(names.includes("mcp_notes_list"), false);
+      const reply = (body.messages as Array<{ role: string; content: string }>).findLast(message => message.role === "tool");
+      const discovered = (JSON.parse(reply!.content).deferredTools as Array<{ name: string; parameters: unknown }>)
+        .find(tool => tool.name === "mcp_notes_list");
+      assert.deepEqual(discovered?.parameters, inputSchema, "The same turn must receive the freshly discovered MCP schema");
+      sendToolCall(response, "read-records", "ToolCall", { name: "mcp_notes_list", arguments: { limit: 2 } });
     } else {
       const messages = body.messages as Array<{ role: string; content: unknown }>;
       assert.match(JSON.stringify(messages.filter((message) => message.role === "tool")), /fixture-record/);

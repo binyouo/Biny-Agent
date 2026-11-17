@@ -914,11 +914,7 @@ export class RuntimeHostExecution {
       case "graph.pause":
         return await this.host.executeControl(async () => commands.graphs.pauseGraph(requiredString(payload.graphId, "graphId")), runtime);
       case "graph.resume":
-        return await this.host.executeAdmission(async () => {
-          const graph = commands.graphs.resumeGraph(requiredString(payload.graphId, "graphId"));
-          commands.graphs.createWake(graph.graphId, "graph_resumed");
-          return graph;
-        }, runtime);
+        return await this.host.executeAdmission(async () => commands.graphs.resumeGraph(requiredString(payload.graphId, "graphId")), runtime);
       case "graph.cancel":
         return await this.host.executeControl(async () => await this.cancelGraph(requiredString(payload.graphId, "graphId"), runtime, commands), runtime);
       case "capability.register":

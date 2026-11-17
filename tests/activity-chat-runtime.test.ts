@@ -64,21 +64,21 @@ try {
     assert.ok(greeting.includes(started), "真实模型请求包含活动发生时间");
     assert.match(greeting, /近期已分析活动：.*登录排查完成/su,
       "问候须区分已分析的具体活动与焦点、统计；原有注入测试只检查材料存在");
-    assert.match(requests.at(-1)?.systemPrompt ?? "", /When the reference contains analyzed activities.*mention at least ONE specific item/iu,
+    assert.match(JSON.stringify(requests.at(-1)?.messages), /When the reference contains analyzed activities.*mention at least ONE specific item/iu,
       "真实模型请求必须要求主动引用已分析活动，不能仅允许普通问候");
     assert.doesNotMatch(greeting, /当前活动：|OCR_SECRET_831/u);
     assert.equal((await agent.runTask("上次登录排查结论是什么")).status, "completed");
     const first = requestText(requests.at(-1)?.messages ?? []);
     assert.match(first, /登录排查完成/u);
     assert.doesNotMatch(first, /OCR_SECRET_831/u);
-    assert.doesNotMatch(first, /org\.example\.editor/u, "问候焦点引用不会被下一轮继承");
+    assert.doesNotMatch(requestText((requests.at(-1)?.messages ?? []).filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).slice(-1)), /org\.example\.editor/u, "问候焦点引用不会重复注入新的用户消息");
     const events = await readSessionEvents(recorder.filePath);
     assert.deepEqual(events.filter((event) => event.type === "user_message").map((event) => event.content),
       ["hi", "上次登录排查结论是什么"], "持久化用户事件仅保存原始输入");
 
     assert.equal((await agent.runTask("问")).status, "completed");
-    assert.doesNotMatch(requestText(requests.at(-1)?.messages ?? []), /登录排查完成/u,
-      "上一轮 Activity 引用不得保留在对话历史");
+    assert.doesNotMatch(requestText((requests.at(-1)?.messages ?? []).filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).slice(-1)), /登录排查完成/u,
+      "当前回合不复用旧 Activity 查询结果，已发送历史保持原样");
   } finally {
     await agent.close();
   }

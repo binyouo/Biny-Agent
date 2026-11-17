@@ -86,7 +86,6 @@ for (const control of ["complete", "missing-output", "pause-before-projection"] 
     assert.equal(graphs.inspectGraph(graph.graphId).nodes[0]?.status, "running");
     assert.equal(downstreamWorkerCalls, 0);
     graphs.resumeGraph(graph.graphId);
-    graphs.createWake(graph.graphId, "graph_resumed");
     // Enqueue before entering tick without yielding first: it lands while
     // completed-report reconciliation awaits, and is also valid on the baseline.
     if (control === "pause-before-projection") queueMicrotask(() => graphs.pauseGraph(graph.graphId));

@@ -141,9 +141,6 @@ export class ToolExecutionCoordinator {
   private readonly pendingExecutions = new Map<Promise<unknown>, string>();
   private readonly quarantinedCodeModeChildIds = new Set<string>();
   private readonly codeModeToolChecks = new WeakMap<AgentTool, () => boolean>();
-  private readonly observedToolCallCounts = new Map<string, number>();
-  private readonly duplicateToolCallIds = new Set<string>();
-  private readonly duplicateExecutionCounts = new Map<string, number>();
   private permissionTail: Promise<void> = Promise.resolve();
   /** 并行工具结果也必须按顺序占用同一份回合预算，归档 I/O 期间不能让其他结果绕过预留。 */
   private toolResultBudgetTail: Promise<void> = Promise.resolve();
@@ -214,14 +211,14 @@ export class ToolExecutionCoordinator {
 
   /** Model-facing tool envelope. */
   createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }, options?: {
-    parentToolCallId?: string; auditOnly?: boolean; script?: boolean; discovery?: boolean; toolDiscoveryNames?: ReadonlySet<string>; toolDiscoveryModelNames?: ReadonlySet<string>; toolDiscoveryNamespace?: string;
+    parentToolCallId?: string; auditOnly?: boolean; script?: boolean; discovery?: boolean; searchCatalog?: boolean; toolDiscoveryNames?: ReadonlySet<string>; toolDiscoveryModelNames?: ReadonlySet<string>; toolDiscoveryNamespace?: string;
   }): AgentTool[] {
     let entries = this.context.toolRegistry.listEntries()
       .filter((entry) => options?.script
         ? (!this.executionToolNames || this.executionToolNames.has(entry.tool.name))
           && isCodeModeTool(entry)
           && isToolScriptCallable(entry.tool, !this.executionToolNames || !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name))
-        : isToolModelVisibleInMode(entry.tool, this.context.config.agent.toolExecutionMode) && (options?.discovery ? !this.executionToolNames || this.executionToolNames.has(entry.tool.name) : !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name)));
+        : isToolModelVisibleInMode(entry.tool, this.context.config.agent.toolExecutionMode) && (options?.discovery ? !this.executionToolNames || this.executionToolNames.has(entry.tool.name) : options?.searchCatalog || !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name)));
     const originalRegistrations = new Map(entries.map((entry) => [entry.tool.name, entry] as const));
     if (editing) {
       entries = routeEditingTools(entries, { workspaceRoot: this.context.workspaceRoot, ignore: this.context.config.workspace.ignore, attachmentRoot: editing.attachmentRoot }, editing.mode);
@@ -369,11 +366,7 @@ export class ToolExecutionCoordinator {
         let error: string | undefined;
         let status: ToolExecutionResultStatus = "succeeded";
         const parsed = codeModeInput.schema.safeParse(args);
-        if (this.duplicateToolCallIds.has(toolCallId)) {
-          error = `Duplicate run_script tool call id: ${toolCallId}`;
-          result = { ok: false, error, childCalls: [] };
-          status = "failed";
-        } else if (!parsed.success || Buffer.byteLength(parsed.data.code) > codeModePolicy.maxSourceBytes) {
+        if (!parsed.success || Buffer.byteLength(parsed.data.code) > codeModePolicy.maxSourceBytes) {
           error = "run_script requires a nonempty description of at most 120 characters, code of at most 64 KiB, a valid language, and timeout_ms between 1 and 600000. Unknown parameters are rejected.";
           result = { ok: false, error, childCalls: [] };
           status = "failed";
@@ -514,78 +507,10 @@ export class ToolExecutionCoordinator {
     throw new Error(`Cannot continue: tool ${tool} (${operationId}) has an unknown side effect. Inspect its outcome before retrying.`);
   }
 
-  observeToolCall(toolCallId: string): string | undefined {
-    const count = (this.observedToolCallCounts.get(toolCallId) ?? 0) + 1;
-    this.observedToolCallCounts.set(toolCallId, count);
-    if (count < 2) return undefined;
-    this.duplicateToolCallIds.add(toolCallId);
-    return `Duplicate tool call id received from the model: ${toolCallId}. The turn was stopped before tool execution.`;
-  }
-
-  async handleInvalidToolCall(toolName: string, toolCallId: string, input: unknown, signal?: AbortSignal): Promise<unknown> {
-    const registeredEntry = this.context.toolRegistry.list().find((tool) => tool.name === toolName);
-    if (this.allowedToolNames && !this.allowedToolNames.has(toolName) || registeredEntry && !isToolModelVisibleInMode(registeredEntry, this.context.config.agent.toolExecutionMode)) {
-      const call = { id: toolCallId, name: toolName, args: input };
-      const sequence = this.nextSequence();
-      const operationId = createToolOperationId(this.context.recorder.sessionId, toolCallId);
-      const errorMessage = `Tool ${toolName} is not available in the current mode.`;
-      const stepContext = this.getStepContext();
-      await this.recordAndFlush({
-        type: "tool_call",
-        tool: toolName,
-        args: input,
-        toolCallId,
-        sequence,
-        assistantContent: stepContext.assistantContent,
-        reasoningContent: stepContext.reasoningContent,
-        reasoningBlocks: stepContext.reasoningBlocks
-      });
-      await this.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "not_started", retrySafety: "unknown" });
-      await this.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "failed", evidence: errorMessage, retrySafety: "unknown" });
-      this.emit({ type: "tool.started", toolCallId, tool: toolName, args: input, operationId });
-      return await this.finishSyntheticCall(call, sequence, { error: errorMessage }, errorMessage, { executionStatus: "failed", operationId });
-    }
-    let registered: Tool;
-    try {
-      registered = this.context.toolRegistry.get(toolName);
-    } catch {
-      const result = { error: `Unknown tool: ${toolName}` };
-      const sequence = this.nextSequence();
-      const operationId = createToolOperationId(this.context.recorder.sessionId, toolCallId);
-      await this.recordAndFlush({
-        type: "tool_call",
-        tool: toolName,
-        args: input,
-        toolCallId,
-        sequence,
-        assistantContent: this.getStepContext().assistantContent,
-        reasoningContent: this.getStepContext().reasoningContent,
-        reasoningBlocks: this.getStepContext().reasoningBlocks
-      });
-      await this.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "not_started", retrySafety: "unknown" });
-      await this.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "failed", evidence: result.error, retrySafety: "unknown" });
-      this.emit({ type: "tool.started", toolCallId, tool: toolName, args: input, operationId });
-      return await this.finishSyntheticCall(
-        { id: toolCallId, name: toolName, args: input },
-        sequence,
-        result,
-        result.error,
-        { executionStatus: "failed", operationId }
-      );
-    }
-    const source = this.context.toolRegistry.listEntries().find((entry) => entry.tool.name === toolName)?.source ?? registered.source ?? "builtin";
-    return await this.execute(registered, input, { toolCallId, abortSignal: signal }, source);
-  }
-
   private async execute(toolDefinition: Tool, input: unknown, options: ToolCallExecutionOptions, source: ToolSource): Promise<unknown> {
-    // Tool calls are observed from fullStream before model-call-end starts the
-    // batch. Yield once so every id in the batch can be classified before any
-    // side effect is admitted.
-    await Promise.resolve();
-    const duplicate = this.duplicateToolCallIds.has(options.toolCallId);
     const sequence = this.nextSequence();
     const call = {
-      id: duplicate ? this.duplicateAuditId(options.toolCallId, sequence) : options.toolCallId,
+      id: options.toolCallId,
       name: toolDefinition.name,
       args: input
     };
@@ -702,13 +627,6 @@ export class ToolExecutionCoordinator {
     };
 
     try {
-      if (duplicate) {
-        this.emit({ type: "tool.started", toolCallId: call.id, tool: call.name, args: call.args, operationId });
-        const message = `Duplicate tool call id was rejected before execution: ${options.toolCallId}.`;
-        // The turn already emitted one fatal protocol error. Keep each rejected
-        // call auditable through its tool_result without duplicating UI errors.
-        return await finish({ error: message, duplicateToolCallId: true }, message, "failed");
-      }
       if (signal?.aborted) {
         this.emit({ type: "tool.started", toolCallId: call.id, tool: call.name, args: call.args, operationId });
         const message = abortedToolMessage(call.name, signal.reason);
@@ -1657,12 +1575,6 @@ export class ToolExecutionCoordinator {
 
   private nextSequence(): number {
     return this.context.recorder.nextToolCallSequence();
-  }
-
-  private duplicateAuditId(toolCallId: string, sequence: number): string {
-    const count = (this.duplicateExecutionCounts.get(toolCallId) ?? 0) + 1;
-    this.duplicateExecutionCounts.set(toolCallId, count);
-    return `${toolCallId}:duplicate:${String(count)}:${String(sequence)}`;
   }
 
   private trackExecution<T>(execution: Promise<T>, toolCallId: string): Promise<T> {

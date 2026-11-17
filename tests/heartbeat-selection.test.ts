@@ -68,7 +68,7 @@ for (const mode of ["unchanged", "draft", "resume", "return-original", "goal-ret
     assert.deepEqual(await runtime.sessionCommand("TodoShow", {}), { sessionId: current, todos: expected });
     assert.equal(await runtime.heartbeat.triggerNow(), true, runtime.heartbeat.status().lastError);
     assert.equal(bodies.length, 1);
-    const user = bodies[0]!.messages.filter(message => message.role === "user").at(-1);
+    const user = bodies[0]!.messages.filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1);
     assert.ok(user);
     const content = typeof user.content === "string" ? user.content : JSON.stringify(user.content);
     const match = content.match(/ACTIVE TASK REVIEW\n[^\n]+\n([^\n]+)/u);

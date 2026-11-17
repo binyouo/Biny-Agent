@@ -1,3 +1,4 @@
+import { isRuntimeContext } from "../src/agent/context/runtimeContext.js";
 import { testModel } from "./helpers/model.js";
 /** Recalled facts must fit as complete user-message envelopes, never raw-body estimates. */
 import assert from "node:assert/strict";
@@ -92,7 +93,7 @@ test("recalled-memory delimiters cannot spend the configured compaction reserve"
   const memory = fixture(488, [first]);
   const prepared = await memory.prepareTurn(input, "system");
   assertFits(memory, prepared);
-  assert.deepEqual(prepared.messages, [originalUser([])]);
+  assert.deepEqual(prepared.messages.filter(message => !isRuntimeContext(message)), [originalUser([])]);
   assert.equal((await memory.status()).memoryInjectedCount, 0);
   assert.equal(memory.getBudget().components?.find((component) => component.id === "stable memory")?.disposition, "omitted");
 });
@@ -123,8 +124,8 @@ for (const shape of [
       const prepared = await memory.prepareTurn(input, prompt, undefined, shape.attachments);
       assertFits(memory, prepared);
       const included = extra >= 0;
-      assert.deepEqual(prepared.messages, [...shape.history, included ? expectedWithMemory : expectedWithoutMemory]);
-      assert.deepEqual(stripTransientTurnContext(prepared.messages), [...shape.history, originalUser(shape.attachments)],
+      assert.deepEqual(prepared.messages.filter(message => !isRuntimeContext(message)), [...shape.history, included ? expectedWithMemory : expectedWithoutMemory]);
+      assert.deepEqual(stripTransientTurnContext(prepared.messages.filter(message => !isRuntimeContext(message))), [...shape.history, originalUser(shape.attachments)],
         "original user text, media and tool-call/result pairs remain unchanged");
       const component = memory.getBudget().components!.find((item) => item.id === "stable memory")!;
       assert.equal(component.requestedTokens, memoryCharge, "requested memory counts its complete rendered user-message delta");
@@ -147,7 +148,7 @@ test("ranked memory facts remain intact and selection stops when the next comple
   const memory = fixture(baseCharge + memoryCharge + reserve, [first, huge, lower], reserve);
   const prepared = await memory.prepareTurn(input, "system");
   assertFits(memory, prepared);
-  assert.deepEqual(prepared.messages, [expectedUser([], "", [first])]);
+  assert.deepEqual(prepared.messages.filter(message => !isRuntimeContext(message)), [expectedUser([], "", [first])]);
   assert.deepEqual((await memory.status()).memoryInjectedSummaries, [first.excerpt]);
   assert.equal(memory.getBudget().components!.find((component) => component.id === "stable memory")?.disposition, "trimmed");
   assert.deepEqual(memory.getBudget().omitted, ["stable memory (trimmed)"]);
@@ -157,19 +158,19 @@ test("no recalled facts and zero remaining budget add no envelope", async () => 
   const reserve = 37;
   const roomy = fixture(20_000, [], reserve);
   const prepared = await roomy.prepareTurn(input, "system");
-  assert.deepEqual(prepared.messages, [originalUser([])]);
+  assert.deepEqual(prepared.messages.filter(message => !isRuntimeContext(message)), [originalUser([])]);
   assert.equal(roomy.getBudget().components!.some((component) => component.id === "stable memory"), false);
   assert.equal((await roomy.status()).memoryInjectedCount, 0);
   const disabled = fixture(20_000, [first], reserve);
   const disabledPrepared = await disabled.prepareTurn(input, "system", undefined, [], false);
-  assert.deepEqual(disabledPrepared.messages, [originalUser([])]);
+  assert.deepEqual(disabledPrepared.messages.filter(message => !isRuntimeContext(message)), [originalUser([])]);
   assert.equal(disabled.getBudget().components!.some((component) => component.id === "stable memory"), false);
   assert.equal((await disabled.status()).memoryInjectedCount, 0);
   const baseCharge = roomy.getBudget().components!.reduce((total, component) => total + component.usedTokens, 0);
   const exhausted = fixture(baseCharge + reserve, [first], reserve);
   const exhaustedPrepared = await exhausted.prepareTurn(input, "system");
   assertFits(exhausted, exhaustedPrepared);
-  assert.deepEqual(exhaustedPrepared.messages, [originalUser([])]);
+  assert.deepEqual(exhaustedPrepared.messages.filter(message => !isRuntimeContext(message)), [originalUser([])]);
   assert.equal(exhausted.getBudget().components!.find((component) => component.id === "stable memory")?.usedTokens, 0);
 });
 
@@ -179,7 +180,7 @@ test("empty-turn continuation does not inject recalled facts or a new user messa
   let next = await progress.next();
   while (!next.done) next = await progress.next();
   assertFits(memory, next.value);
-  assert.deepEqual(next.value.messages, history);
+  assert.deepEqual(next.value.messages.filter(message => !isRuntimeContext(message)), history);
   assert.equal(memory.getBudget().components!.some((component) => component.id === "stable memory"), false);
   assert.equal((await memory.status()).memoryInjectedCount, 0);
 });

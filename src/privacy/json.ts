@@ -1,5 +1,5 @@
-import { maskSentText, maskText, restore, type MaskHit, type MaskSegment, type MaskTextResult } from "./engine.js";
-import { defaultStore, type RedactionStore } from "./store.js";
+import { maskSentText, maskText, type MaskHit, type MaskSegment, type MaskTextResult } from "./engine.js";
+import type { RedactionStore } from "./store.js";
 import type { RedactionSettings } from "./settings.js";
 
 const KEPT_KEYS = new Set([
@@ -95,7 +95,7 @@ function contextAt(root: unknown, path: string[]): { args: boolean; signed: bool
 export interface MaskJsonSegment { path: string; original: string; masked: string; segments: MaskSegment[]; role?: string; truncated?: boolean }
 export interface MaskJsonResult { text: string; hits: MaskHit[]; segments: MaskJsonSegment[] }
 
-export function maskJson(source: string, settings: RedactionSettings, store: RedactionStore = defaultStore, route = ""): MaskJsonResult {
+export function maskJson(source: string, settings: RedactionSettings, store: RedactionStore, route = ""): MaskJsonResult {
   return store.withRequest(() => maskRequestJson(source, settings, store, route));
 }
 
@@ -153,7 +153,7 @@ function maskRequestJson(source: string, settings: RedactionSettings, store: Red
 }
 
 /** 嵌套 JSON 的工具参数须先按内层字符串转义，再按外层字符串转义。 */
-export function restoreJson(source: string, restoreText: (value: string) => string = restore): string {
+export function restoreJson(source: string, restoreText: (value: string) => string): string {
   let root: unknown;
   try { root = JSON.parse(source); } catch { return restoreText(source); }
   return walkJsonValues(source, (value, path, key) => {

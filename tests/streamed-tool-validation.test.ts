@@ -18,6 +18,7 @@ import type { JSONSchema7, LanguageModelV4, LanguageModelV4StreamPart } from "@a
 import { vercelAgentLoopContinue } from "../src/agent/core/vercelAgentLoop.js";
 import type { AgentEvent, AgentTool } from "../src/agent/core/types.js";
 import { createVercelLanguageModel } from "../src/llm/vercelModel.js";
+import { testModel } from "./helpers/model.js";
 
 const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 type Transport = "direct" | "compatible";
@@ -99,6 +100,26 @@ function assertRejectedWithinBudget(run: ReturnType<typeof fixture>): void {
 }
 
 for (const transport of ["direct", "compatible"] as const) {
+  for (const duplicate of [
+    { name: "Inspect", input: '{"path":"second"}' },
+    { name: "inspect", input: '{"filepath":"second"}' },
+    { name: "Inspect", input: '{}' },
+    { name: "Unavailable", input: '{}' }
+  ]) {
+    test(`${transport}: duplicate IDs reject the entire batch before execution (${duplicate.name}, ${duplicate.input})`, async () => {
+      const run = fixture([
+        { id: "unrelated", input: '{"path":"unrelated"}' },
+        { id: "duplicate", input: '{"path":"first"}' },
+        { id: "duplicate", ...duplicate }
+      ], { transport });
+      await run.done;
+      assert.deepEqual(run.executions, [], "an ambiguous batch must not dispatch any side effects");
+      assert.equal(run.requests(), 1, "a protocol identity failure must stop without correction or replay");
+      assert.equal(run.events.some(event => event.type === "tool_execution_start"), false);
+      assert.ok(run.events.some(event => event.type === "error" && event.fatal && /Duplicate tool call id.*duplicate/u.test(event.error)));
+    });
+  }
+
   for (const [label, input] of [
     ["empty required arguments", ""],
     ["missing required property", "{}"],
@@ -196,7 +217,40 @@ for (const transport of ["direct", "compatible"] as const) {
   });
 }
 
-for (const mode of ["raw-validation", "approved", "denied", "collision"] as const) {
+test("tool IDs are scoped to a provider step and do not limit repeated actions", async () => {
+  let requests = 0;
+  const calls: string[] = [];
+  const tool: AgentTool = {
+    name: "Inspect", description: "Inspect fixture", parameters: { type: "object", properties: {} },
+    async execute(id) { calls.push(id); return { content: [] }; }
+  };
+  const model = testModel({
+    provider: "fixture", modelId: "step-local-identities",
+    async stream() {
+      const step = requests++;
+      return (async function* () {
+        if (step < 2) {
+          yield { type: "tool-call" as const, id: "reused", name: "Inspect", arguments: {} };
+          yield { type: "tool-call" as const, id: "other", name: "Inspect", arguments: {} };
+          yield { type: "finish" as const, reason: "tool-calls" as const };
+        } else {
+          yield { type: "text-delta" as const, text: "done" };
+          yield { type: "finish" as const, reason: "stop" as const };
+        }
+      })();
+    }
+  });
+  const errors: AgentEvent[] = [];
+  for await (const event of vercelAgentLoopContinue(
+    { messages: [{ role: "user", content: "Inspect twice" }], tools: [tool] },
+    { model, tools: [tool], maxSteps: 3 }
+  )) if (event.type === "error") errors.push(event);
+  assert.deepEqual(calls, ["reused", "other", "reused", "other"]);
+  assert.equal(requests, 3);
+  assert.deepEqual(errors, []);
+});
+
+for (const mode of ["raw-validation", "approved", "denied", "collision", "duplicate-id", "duplicate-code-mode"] as const) {
   test(`main coordinator retains ${mode} after SDK repair`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-stream-validation-"));
     await ensureAgentDirs(root);
@@ -221,7 +275,9 @@ for (const mode of ["raw-validation", "approved", "denied", "collision"] as cons
       workspaceRoot: root, config, recorder, toolRegistry: registry,
       confirmPermission: async () => { permissionRequests++; return { approved: mode === "approved" }; }
     }, new PermissionManager(config.permission), () => undefined, () => ({}));
-    const agentTool = coordinator.createAgentTools().find(tool => tool.name === "Inspect")!;
+    const agentTool = mode === "duplicate-code-mode"
+      ? coordinator.createCodeModeTool()
+      : coordinator.createAgentTools().find(tool => tool.name === "Inspect")!;
     try {
       if (mode === "raw-validation") {
         const result = await agentTool.execute("raw-invalid", {});
@@ -229,6 +285,21 @@ for (const mode of ["raw-validation", "approved", "denied", "collision"] as cons
         assert.deepEqual(resolved, []);
         assert.deepEqual(executed, []);
         assert.equal(permissionRequests, 0);
+      } else if (mode === "duplicate-id" || mode === "duplicate-code-mode") {
+        const input = mode === "duplicate-code-mode"
+          ? JSON.stringify({ description: "Inspect fixture", code: 'return await tools.Inspect({path:"fixture"});' })
+          : '{"path":"fixture"}';
+        const run = fixture([
+          { id: "duplicate", name: agentTool.name, input },
+          { id: "duplicate", name: agentTool.name, input }
+        ], { agentTool });
+        await run.done;
+        assert.deepEqual(resolved, []);
+        assert.deepEqual(executed, []);
+        assert.equal(permissionRequests, 0, "ambiguous calls never enter permission admission");
+        assert.equal(run.requests(), 1);
+        assert.equal(run.events.some(event => event.type === "tool_execution_start"), false);
+        assert.ok(run.events.some(event => event.type === "error" && event.fatal && /Duplicate tool call id/u.test(event.error)));
       } else if (mode === "collision") {
         const run = fixture([{ id: "ambiguous-original", input: '{"filepath":"one","path":"two","count":"2"}' }], { agentTool });
         await run.done;

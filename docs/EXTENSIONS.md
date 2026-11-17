@@ -23,6 +23,8 @@ Grep 继续遵循 Biny 工作区的路径、忽略与凭据保护规则，不直
 Code Mode 不向主模型声明独立的 `ToolSearch`：模型从 `run_script` 的说明获知 `searchTools(query)`、`describeTool(name)`、`describeNamespace(name)`，进入脚本后再按需查询目录。搜索命中项带有 `parameters` schema、返回值 schema（工具提供时）和调用要求；先读取这些定义，再编写调用脚本，避免猜测参数名。完整注册名在本地精确匹配，自然语言查询继续使用配置的工具模型；使用辅助模型并不要求另行声明一个搜索工具。
 
 `searchTools(query, {limit, namespace})` 返回工具定义数组，默认最多 8 项、上限 20 项；它复用宿主的 `ToolSearch` 搜索，但不返回 `{tools: [...]}` 包装。普通 `ToolSearch` 则返回包含 `status`、`query`、`found`、`tools` 的结果对象。脚本使用 helper，不调用 `tools.ToolSearch`；标记 `invocation: "direct"` 的工具要在下一步由模型直接调用。`describeTool(name)` 返回完整定义或 `null`，`describeNamespace(name)` 返回含 `tools` 数组的命名空间或 `null`。
+在支持原生工具搜索的 OpenAI Responses 模型上（当前识别 GPT-5.4、5.5、5.6 和 GPT-6 系列），direct 模式的 ToolSearch 将发现的普通函数 schema 作为 `tool_search_output` 追加到历史，不再把这些已加载工具加入后续请求的顶层工具声明。schema 快照随成功搜索结果保存，恢复时按原位置重放；执行仍校验当前注册身份、选择范围和权限。Chat Completions 在 direct 模式下固定声明 `ToolCall`。搜索新工具时，参数定义随 ToolSearch 结果追加到对话末尾，模型通过 `ToolCall({name, arguments})` 调用。已声明的工具可以按原名直接调用。Gemini 原生也固定声明 `ToolCall`，通过 `ToolCall({name, argumentsJson})` 传递 JSON 编码的参数对象。支持工具引用的 Claude 模型从首轮起声明可搜索工具并标记 `defer_loading`，搜索结果通过 `tool_reference` 追加，模型随后按工具原名调用。在注册表和工具选择相同的情况下，搜索不会改动这些协议的顶层 `tools`。其余模型在发现后更新普通工具声明。Code Mode 的脚本发现沿用既有执行入口，不自动切换执行模式。工具专用提示随运行时上下文追加，发现工具不会重写固定系统提示。
+
 
 `run_script` 必须提供非空 `description` 和 `code`，未知参数会被拒绝。工具说明提供分开的发现与执行示例：先返回完整定义供模型检查，再编排真实调用。子调用返回数据遵循该工具的输出契约，例如 `tools.Read` 返回含 `content` 的对象，`sh` 返回 stdout 字符串。
 

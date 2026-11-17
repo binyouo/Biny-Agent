@@ -1,3 +1,5 @@
+import { anthropicToolReferenceResult } from "./deferredToolSearch.js";
+import { declaredTools, loadedToolSchemas, supportsNativeToolSearch } from "./nativeToolSearch.js";
 import {
   type LanguageModelCallEndEvent,
   type ModelMessage,
@@ -39,9 +41,15 @@ export async function modelMessages(state: VercelLoopState): Promise<ModelMessag
   const messages = (state.config.transformContext
     ? await state.config.transformContext(state.context.messages, state.signal)
     : state.context.messages).map(projectMessageSentAt);
-  await state.config.onRequestContext?.({ systemPrompt: state.context.systemPrompt, messages, tools: state.context.tools });
+  const nativeSearch = supportsNativeToolSearch(state.model) && !!state.config.resolveToolSearchTools;
+  await state.config.onRequestContext?.({ systemPrompt: state.context.systemPrompt, messages, tools: declaredTools(state.context.tools, state.context.messages, nativeSearch) });
   state.directPromptMessages = messages;
-  return toModelMessages(messages, state.context.tools.some((tool) => tool.providerTool === "openai-apply-patch"));
+  const nativePatch = state.context.tools.some(tool => tool.providerTool === "openai-apply-patch");
+  const geminiDispatcher = state.model.wireProtocol === "gemini";
+  const anthropicDeclarations = state.model.wireProtocol === "anthropic"
+    ? new Map(state.context.tools.flatMap(tool => tool.anthropicDeferredDigest ? [[tool.name, tool.anthropicDeferredDigest] as const] : []))
+    : undefined;
+  return toModelMessages(messages, nativePatch, { nativeSearch, geminiDispatcher, anthropicDeclarations });
 }
 
 export async function recordDirectModelRequest(
@@ -141,7 +149,7 @@ export function beginDirectModelRequest(state: VercelLoopState, callId: string):
     modelId: state.model.modelId,
     stableSystemPrompt: stableSystemPromptForCache(state.context.systemPrompt),
     systemPrompt: state.context.systemPrompt,
-    tools: state.context.tools,
+    tools: declaredTools(state.context.tools, state.context.messages, supportsNativeToolSearch(state.model) && !!state.config.resolveToolSearchTools),
     messages: state.directPromptMessages ?? state.context.messages,
     providerOptions: state.modelOptions?.providerOptions,
     promptEpoch,
@@ -163,7 +171,9 @@ export function beginDirectModelRequest(state: VercelLoopState, callId: string):
   };
 }
 
-export function toModelMessages(messages: AgentMessage[], nativePatch = false): ModelMessage[] {
+export function toModelMessages(messages: AgentMessage[], nativePatch = false, {
+  nativeSearch, geminiDispatcher, anthropicDeclarations
+}: { nativeSearch?: boolean; geminiDispatcher?: boolean; anthropicDeclarations?: ReadonlyMap<string, string> } = {}): ModelMessage[] {
   return orderHistoricalPatchResults(boundComputerFrames(messages), nativePatch).map(projectMessageSentAt).map((message) => {
     if (message.role === "user") {
       if (typeof message.content === "string") return { role: "user", content: message.content };
@@ -181,14 +191,28 @@ export function toModelMessages(messages: AgentMessage[], nativePatch = false): 
           if (part.type === "text") return { type: "text", text: part.text };
           // SDK 输出使用 providerMetadata，消息输入则通过 providerOptions 回传签名等元数据。
           if (part.type === "reasoning") return { type: "reasoning", text: part.text, providerOptions: providerMetadata(part.providerMetadata) };
+          if (part.viaToolCall) {
+            const input = geminiDispatcher
+              ? { name: part.name, argumentsJson: part.geminiArgumentsJson ?? JSON.stringify(part.arguments) }
+              : { name: part.name, arguments: part.arguments };
+            return { type: "tool-call", toolCallId: part.id, toolName: "ToolCall", input, providerOptions: providerMetadata(part.providerMetadata) };
+          }
           if (part.name === "apply_patch" && !nativePatch) return { type: "text", text: `Historical file patch request: ${JSON.stringify(part.arguments)}` };
           const metadata = providerMetadata(part.providerMetadata);
-          return { type: "tool-call", toolCallId: part.id, toolName: part.name, input: part.arguments,
+          return { type: "tool-call", toolCallId: part.id, toolName: part.name, input: nativeSearch && part.name === "ToolSearch" ? { arguments: part.arguments, call_id: part.id } : part.arguments,
             ...(metadata === undefined ? {} : { providerOptions: metadata }) };
         })
       };
     }
-    if (message.toolName === "apply_patch") {
+    if (anthropicDeclarations && message.toolName === "ToolSearch" && !message.viaToolCall) {
+      const result = anthropicToolReferenceResult(message, anthropicDeclarations);
+      if (result) return result;
+    }
+    if (!message.viaToolCall && message.toolName === "ToolSearch" && nativeSearch) {
+      return { role: "tool", content: [{ type: "tool-result", toolCallId: message.toolCallId, toolName: message.toolName,
+        output: { type: "json", value: { tools: loadedToolSchemas(message) } } }] };
+    }
+    if (!message.viaToolCall && message.toolName === "apply_patch") {
       const text = message.content.map((part) => part.type === "text" ? part.text : "[binary content]").join("\n");
       if (!nativePatch) return { role: "assistant", content: [{ type: "text", text: `Historical file patch result (${message.isError ? "failed" : "completed"}): ${text}` }] };
       return { role: "tool", content: [{ type: "tool-result", toolCallId: message.toolCallId, toolName: message.toolName, output: { type: "json", value: { status: message.isError ? "failed" : "completed", output: text } } }] };
@@ -198,7 +222,7 @@ export function toModelMessages(messages: AgentMessage[], nativePatch = false): 
       content: [{
         type: "tool-result",
         toolCallId: message.toolCallId,
-        toolName: message.toolName,
+        toolName: message.viaToolCall ? "ToolCall" : message.toolName,
         output: message.isError
           ? { type: "error-text", value: stringify(message.content) }
           : message.content.some((part) => part.type === "image")
@@ -221,7 +245,7 @@ function orderHistoricalPatchResults(messages: AgentMessage[], nativePatch: bool
       ordered.push(...patchResults);
       patchResults.length = 0;
     }
-    if (message.role === "toolResult" && message.toolName === "apply_patch") patchResults.push(message);
+    if (message.role === "toolResult" && !message.viaToolCall && message.toolName === "apply_patch") patchResults.push(message);
     else ordered.push(message);
   }
   ordered.push(...patchResults);

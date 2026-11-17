@@ -125,18 +125,6 @@ test("a generated maximum-length title can be duplicated again", { timeout: 10_0
   await assertSourceUnchanged(f);
 });
 
-test("user-message fork uses the bounded title without changing its prefix or source", { timeout: 10_000 }, async context => {
-  const f = await fixture(context, "x".repeat(120));
-  const childId = await f.projects.forkSessionAtUserMessage(f.project, sourceId, 1);
-  await assertChild(f, childId, "x".repeat(117) + " 分支");
-  assert.deepEqual((await readStoredSessionEvents(f.dataRoot, childId)).events, sourceEvents.slice(0, 2));
-  assert.deepEqual((await readSessionCatalogRecord(f.dataRoot, childId))?.branchPoint, {
-    kind: "user_message", index: 1, messageId: "second"
-  });
-  assert.equal((await listSessionFiles(f.dataRoot)).length, 2);
-  await assertSourceUnchanged(f);
-});
-
 test("manager keeps 120-unit rename validation and selects the completed duplicate", { timeout: 10_000 }, async context => {
   const f = await fixture(context, "Before rename");
   const title = "x".repeat(120);

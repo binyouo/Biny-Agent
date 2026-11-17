@@ -103,7 +103,6 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
     import {ComposerDraftState} from './src/desktop/renderer/src/components/composer/composerDraft.js';
     import {WorkspaceContextBar} from './src/desktop/renderer/src/components/project/WorkspaceContextBar.js';
     import {WorkspaceReferencesPanel} from './src/desktop/renderer/src/components/workspace/WorkspaceReferencesPanel.js';
-    import {createNavigationState, pushNavigation, replaceNavigation} from './src/desktop/renderer/src/navigationHistory.js';
     import {syntheticSession} from './src/desktop/renderer/src/app/desktopState.js';
     ${declaration(ipc, "attachmentSchema")}
     export {WorkspaceReferencesPanel};
@@ -138,8 +137,6 @@ async function fixture(t: TestContext, initialSessionId?: string, legacyDraftPro
       const setDraftMemoryOverride = noop;
       const loadRequestRef = useRef(0);
       const projectRemovalRef = useRef(new Map());
-      const navigationRef = useRef(createNavigationState());
-      const commitNavigation = noop;
       const openSession = async () => true;
       const refreshRuntimeFailure = async () => {};
       const loading = false;

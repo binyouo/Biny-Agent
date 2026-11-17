@@ -20,7 +20,7 @@ const functionNames = [
   "numberField", "stableJson",
   ...optionalFunctionNames
 ] as const;
-const directCalls = new Set<string>([...functionNames, "serializeToolResult", "String", "Boolean"]);
+const directCalls = new Set<string>([...functionNames, "serializeToolResult", "String", "Boolean", "isRuntimeContext"]);
 const methodCalls = new Set([
   "messages.entries", "message.content.filter", "entry.message.content.some", "calls.set", "calls.get", "entries.push",
   "entries.filter", "exact.get", "exact.set", "reads.push", "readBuckets.get", "readBuckets.set", "snapshots.get", "snapshots.set",
@@ -76,10 +76,16 @@ const pureDeclarations = functionNames.map((name) => {
   validatePure(node);
   return name === "readResultLineRange" ? node.getText(source).replace(/^export\s+/u, "") : node.getText(source);
 });
+const runtimePath = new URL("../src/agent/context/runtimeContext.ts", import.meta.url);
+const runtimeSource = ts.createSourceFile(runtimePath.pathname, readFileSync(runtimePath, "utf8"), ts.ScriptTarget.Latest, true);
+const runtimePredicate = runtimeSource.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "isRuntimeContext");
+assert.ok(runtimePredicate);
+validatePure(runtimePredicate);
 // Deterministic serialization of synthetic, non-sensitive plain JSON only.
 // This pure local substitute never invokes the product serializer or redaction.
 const pureSource = [
   'function serializeToolResult(value: unknown): string { return JSON.stringify(value) ?? "null"; }',
+  runtimePredicate.getText(runtimeSource).replace(/^export\s+/u, ""),
   ...pureDeclarations,
   '({ inspect(messages: unknown[]) { return findReplacements(collectToolResults(messages)); } });'
 ].join("\n");

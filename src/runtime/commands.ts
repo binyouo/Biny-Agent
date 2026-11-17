@@ -187,15 +187,9 @@ export async function executeRuntimeCommand(
     }
     let graph;
     if (action === "inspect") graph = services.graphs.inspectGraph(graphId);
-    else if (action === "start") {
-      graph = services.graphs.startGraph(graphId);
-      services.graphs.createWake(graph.graphId, "graph_started");
-    }
+    else if (action === "start") graph = services.graphs.startGraph(graphId);
     else if (action === "pause") graph = services.graphs.pauseGraph(graphId);
-    else if (action === "resume") {
-      graph = services.graphs.resumeGraph(graphId);
-      services.graphs.createWake(graph.graphId, "graph_resumed");
-    }
+    else if (action === "resume") graph = services.graphs.resumeGraph(graphId);
     else if (action === "cancel") graph = await cancelRuntimeGraph(runtime, services, graphId);
     else throw new Error("Usage: /graph inspect <id> | start <id> | pause <id> | resume <id> | cancel <id> | events <id> [--cursor <cursor>] [--limit <count>]");
     return { ...result(command, "Graph", JSON.stringify(graph, null, 2)), card: buildGraphCard(graph) };

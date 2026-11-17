@@ -727,36 +727,6 @@ export class DesktopProjectService {
     throw new Error("要编辑的消息已不在当前会话中。");
   }
 
-  /**
-   * 在第 N 条用户消息处分叉出一个新会话，用于「编辑并重发」：新会话只保留该消息之前的事件，
-   * 原会话保持不变。`userMessageIndex` 是用户消息的序号（不是事件下标），因为界面上只看得到
-   * 用户消息。
-   */
-  async forkSessionAtUserMessage(project: DesktopProject, sessionId: string, userMessageIndex: number): Promise<string> {
-    const dataRoot = await this.storage.ensureProjectData(project);
-    const events = await readStoredSessionEvents(dataRoot, sessionId).then((result) => result.events);
-    const userEventIndices = events.flatMap((event, index) => event.type === "user_message" && !event.auditOnly && event.metadata?.source !== "subagent" ? [index] : []);
-    const targetEventIndex = userEventIndices[userMessageIndex];
-    if (targetEventIndex === undefined) throw new Error("要编辑的消息已不在当前会话中。");
-    const targetSessionId = createSessionId();
-    const prefix = rebaseForkedSessionEvents(events.slice(0, targetEventIndex));
-    const content = prefix.length ? `${prefix.map((event) => JSON.stringify(event)).join("\n")}\n` : "";
-    await createSessionFile(dataRoot, targetSessionId, Buffer.from(content, "utf8"));
-    const targetEvent = events[targetEventIndex];
-    await registerSessionBranch(dataRoot, {
-      sessionId: targetSessionId,
-      parentSessionId: sessionId,
-      branchPoint: {
-        kind: "user_message",
-        index: userMessageIndex,
-        messageId: targetEvent?.type === "user_message" ? targetEvent.messageId : undefined
-      }
-    });
-    const sourceCatalog = (await listSessionCatalog(dataRoot)).find((item) => item.id === sessionId);
-    await this.copyCatalogMetadata(dataRoot, sourceCatalog, targetSessionId);
-    return targetSessionId;
-  }
-
   async deleteSession(project: DesktopProject, sessionId: string): Promise<void> {
     const dataRoot = await this.storage.ensureProjectData(project);
     await deleteSessionArtifacts(dataRoot, sessionId);

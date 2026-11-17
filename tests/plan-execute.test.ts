@@ -176,6 +176,7 @@ async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
   const tasks = await DurableTaskRunStore.open(root, authority);
   const graphs = await GoalGraphStore.open(root, authority);
   let busy = true;
+  const dispatchedTasks: string[] = [];
   const outcome = { runId: "boundary-run", status: "completed", stopReason: "model_stop", steps: 1, output: "done", durationMs: 1 };
   const idleRuntime = {
     getSnapshot: () => ({ state: { kind: "idle" }, info: { sessionId: "idle-session" } }),
@@ -188,6 +189,7 @@ async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
   const supervisor = new GraphSupervisor({ getStore: () => graphs, getTaskRuns: () => tasks,
     resolveSupervisorRuntime: async sessionId => sessionId === "owner" ? ownerRuntime : idleRuntime,
     resolveSupervisorCommands: async () => ({ taskRuns: tasks, startTaskRun: async (id: string) => {
+      dispatchedTasks.push(id);
       const attempt = tasks.createAttempt(id);
       tasks.transition(id, "running", { attemptId: attempt.attemptId });
       tasks.transition(id, "completed", { attemptId: attempt.attemptId, artifacts: { output: "done" } });
@@ -204,12 +206,11 @@ async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
     const wake = graphs.listSupervisorWakes()[0]!;
     const fixed = graphs.createSupervisedGraph({ supervisorSessionId: "supervisor", nodes: [{ nodeKey: "independent", prompt: "work" }, { nodeKey: "next", prompt: "more work" }] });
     graphs.startGraph(fixed.graphId);
-    const scheduleWakeId = graphs.createWake(fixed.graphId, "test-ready");
     await supervisor.tick();
     await waitUntil(() => graphs.inspectGraph(fixed.graphId).nodes[0]?.status === "completed");
     assert.equal(graphs.inspectGraph(fixed.graphId).nodes[1]?.status, "pending", "one scan dispatches only one serial worker");
     assert.equal(graphs.listSupervisorWakes().find((item) => item.wakeId === wake.wakeId)?.status, "pending");
-    assert.ok(graphs.listGraphEvents(fixed.graphId).events.some((event) => event.eventType === "graph.wake.completed" && JSON.stringify(event.payload).includes(scheduleWakeId)));
+    assert.deepEqual(dispatchedTasks, [graphs.inspectGraph(fixed.graphId).nodes[0]?.taskRunId]);
 
     // When 原会话空闲；Then 先完成监督 wake，下一次扫描才能认领第二项工作。
     busy = false;
@@ -217,8 +218,19 @@ async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
     await waitUntil(() => !graphs.listSupervisorWakes().some((item) => item.wakeId === wake.wakeId));
     assert.equal(graphs.inspectGraph(fixed.graphId).nodes[1]?.status, "pending");
     await supervisor.tick();
-    await waitUntil(() => graphs.inspectGraph(fixed.graphId).nodes.every(node => node.status === "completed"));
-    assert.equal(graphs.inspectGraph(fixed.graphId).status, "running", "worker completion still needs the supervising agent final check");
+    await waitUntil(() => graphs.inspectGraph(fixed.graphId).nodes.every(node => node.status === "completed") && !supervisor.hasActiveWork());
+    const settled = graphs.inspectGraph(fixed.graphId);
+    assert.equal(settled.status, "running", "worker completion still needs the supervising agent final check");
+    await supervisor.tick();
+    await waitUntil(() => !supervisor.hasActiveWork());
+    await supervisor.tick();
+    assert.deepEqual(dispatchedTasks, settled.nodes.map(node => node.taskRunId), "repeated scans must not execute a completed node again");
+    for (const taskRunId of dispatchedTasks) {
+      const task = tasks.get(taskRunId)!;
+      assert.equal(task.status, "completed");
+      assert.equal(task.attempts.length, 1);
+      assert.deepEqual(task.attempts[0]?.artifacts, { output: "done" });
+    }
   } finally {
     supervisor.stop();
     graphs.close(); tasks.close(); authority.close();
@@ -238,7 +250,7 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     };
     const messages = body.messages ?? [];
     const system = textContent(messages[0]?.content);
-    const lastText = textContent(messages.at(-1)?.content);
+    const lastText = textContent(messages.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)?.content);
     const names = new Set((body.tools ?? []).flatMap((tool) => tool.name ?? tool.function?.name ?? []));
     if (system.includes("tool search assistant")) return streamText('{"tools":["PlanStart"]}');
     if (system.includes("选择需要的工具")) return streamText('{"tools":[]}');
@@ -341,7 +353,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
       tools?: Array<{ function?: { name?: string } }>;
     };
     const system = textContent(body.messages[0]?.content);
-    const last = body.messages.at(-1)!;
+    const last = body.messages.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)!;
     const lastText = textContent(last.content);
     if (system.includes("tool search assistant")) {
       return streamText(JSON.stringify({ tools: [pausedCancellation && cancelledTaskRunId ? "TaskStatus" : planning ? "PlanDraft" : "PlanStart"] }));
@@ -390,10 +402,15 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     }
     if (pausedCancellation && cancelledTaskRunId && ((last.role === "user" && lastText.endsWith("Read the cancelled verification task."))
       || (last.role === "tool" && last.tool_call_id === "find-cancelled-task"))) {
-      if (!body.tools?.some((tool) => tool.function?.name === "TaskStatus")) {
-        return streamToolCall("find-cancelled-task", "ToolSearch", { query: "TaskStatus" });
+      if (body.tools?.some(tool => tool.function?.name === "TaskStatus")) {
+        return streamToolCall("probe-cancelled-task", "TaskStatus", { taskRunId: cancelledTaskRunId });
       }
-      return streamToolCall("probe-cancelled-task", "TaskStatus", { taskRunId: cancelledTaskRunId });
+      if (last.tool_call_id === "find-cancelled-task") {
+        assert.ok(body.tools?.some(tool => tool.function?.name === "ToolCall"));
+        assert.ok((JSON.parse(lastText).deferredTools as Array<{ name: string }>).some(tool => tool.name === "TaskStatus"));
+        return streamToolCall("probe-cancelled-task", "ToolCall", { name: "TaskStatus", arguments: { taskRunId: cancelledTaskRunId } });
+      }
+      return streamToolCall("find-cancelled-task", "ToolSearch", { query: "TaskStatus" });
     }
     if (last.role === "tool" && ["inspect-approval-task", "inspect-cancelled-task", "probe-cancelled-task"].includes(last.tool_call_id ?? "")) {
       taskStatusReads.push(JSON.parse(lastText) as { status: string; approval?: { approvalId: string } });
@@ -669,7 +686,7 @@ async function testHostReadOnlyReportPlan(): Promise<void> {
       tools?: Array<{ function?: { name?: string } }>;
     };
     const system = textContent(body.messages[0]?.content);
-    const last = body.messages.at(-1)!;
+    const last = body.messages.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)!;
     const names = (body.tools ?? []).map((tool) => tool.function?.name);
     if (system.includes("tool search assistant")) return streamText('{"tools":["PlanDraft"]}');
     if (system.includes("选择需要的工具")) return streamText('{"tools":[]}');
