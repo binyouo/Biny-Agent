@@ -200,6 +200,7 @@ test("native pairing uses the built CLI, shared Host, permission and persisted s
   assert.equal(historyPage.messages.at(-1)?.content, "history-23");
   const created = await phone.request<RemoteView>("create", { projectId });
   const createdSession = created.sessionId;
+  const transcript = sessionFilePath(root, createdSession);
   const submitted = await phone.request<{ accepted: boolean }>("send", { sessionId: createdSession, text: "Create phone-result.txt for this private phone request" });
   assert.equal(submitted.accepted, true);
   await until(() => phone.view()?.state.kind === "runs" && Boolean((phone.view()!.state as Extract<RemoteView["state"], { kind: "runs" }>).pendingPermission));
@@ -211,7 +212,7 @@ test("native pairing uses the built CLI, shared Host, permission and persisted s
   await until(() => phone.view()?.state.kind === "idle");
   const reply = await phone.request<{ messages: Array<{ content: string }> }>("history", { sessionId: createdSession });
   assert.ok(reply.messages.some(message => message.content.includes("Phone request completed")));
-  const events = await readSessionEvents(sessionFilePath(root, createdSession));
+  const events = await readSessionEvents(transcript);
   assert.equal(events.filter(event => event.type === "user_message" && event.content.includes("private phone request")).length, 1);
   assert.ok(events.some(event => event.type === "tool_result"));
   assert.ok(events.some(event => event.type === "assistant_message" || event.type === "agent_message"));
@@ -222,8 +223,17 @@ test("native pairing uses the built CLI, shared Host, permission and persisted s
   assert.ok(sessions.some(session => session.sessionId === createdSession), "mobile and local client share the same Host session");
   await phone.request("send", { sessionId: createdSession, text: "cancel-probe" });
   await until(() => held !== undefined && phone.view()?.state.kind === "runs");
-  await phone.request("cancel", { sessionId: createdSession, runId: (phone.view()!.state as Extract<RemoteView["state"], { kind: "runs" }>).activeRun.runId });
-  await until(async () => (await readSessionEvents(sessionFilePath(root, createdSession))).some(event => event.type === "turn_status" && event.status === "cancelled"));
+  const cancelledRunId = (phone.view()!.state as Extract<RemoteView["state"], { kind: "runs" }>).activeRun.runId;
+  await phone.request("cancel", { sessionId: createdSession, runId: cancelledRunId });
+  await until(async () => {
+    try {
+      return (await readSessionEvents(transcript)).some(event => event.type === "turn_status"
+        && event.runtime?.runId === cancelledRunId && event.status === "cancelled");
+    } catch (error) {
+      if (error instanceof Error && error.message === `Session changed repeatedly while reading: ${transcript}`) return false;
+      throw error;
+    }
+  });
   await until(() => held!.destroyed);
   const beforeReconnect = agentRequests;
   await phone.close();
