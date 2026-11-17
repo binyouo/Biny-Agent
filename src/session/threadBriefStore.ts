@@ -70,6 +70,11 @@ export class ThreadBriefStore {
   }
 
   suggestions(): BriefProjectSuggestion[] { return this.db.prepare("SELECT value FROM brief_suggestions ORDER BY rowid DESC LIMIT 500").all().map((row) => JSON.parse(String(row.value)) as BriefProjectSuggestion); }
+  /** Historical decisions must not consume the pending-suggestion display budget. */
+  private openSuggestions(): BriefProjectSuggestion[] {
+    return this.db.prepare("SELECT value FROM brief_suggestions WHERE json_extract(value, '$.status') = 'open' ORDER BY rowid DESC LIMIT 500")
+      .all().map((row) => JSON.parse(String(row.value)) as BriefProjectSuggestion);
+  }
   suggestion(id: string): BriefProjectSuggestion | undefined { const row = this.db.prepare("SELECT value FROM brief_suggestions WHERE id = ?").get(id); return row ? JSON.parse(String(row.value)) as BriefProjectSuggestion : undefined; }
   hasSignature(signature: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM brief_suggestions WHERE signature = ?").get(signature)); }
   putSuggestion(value: BriefProjectSuggestion): void { this.db.prepare("INSERT INTO brief_suggestions VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value").run(value.id, value.signature, JSON.stringify(value)); }
@@ -93,6 +98,6 @@ export class ThreadBriefStore {
 
   snapshot(): ThreadBriefSnapshot {
     const error = this.db.prepare("SELECT value FROM brief_meta WHERE key = 'lastError'").get();
-    return { config: this.config(), defaults: structuredClone(defaultThreadBriefSettings), enabledAt: this.enabledAt(), briefs: this.briefs(), suggestions: this.suggestions().filter((entry) => entry.status === "open"), projects: this.projects(), lastError: error ? JSON.parse(String(error.value)) as ThreadBriefSnapshot["lastError"] : undefined };
+    return { config: this.config(), defaults: structuredClone(defaultThreadBriefSettings), enabledAt: this.enabledAt(), briefs: this.briefs(), suggestions: this.openSuggestions(), projects: this.projects(), lastError: error ? JSON.parse(String(error.value)) as ThreadBriefSnapshot["lastError"] : undefined };
   }
 }

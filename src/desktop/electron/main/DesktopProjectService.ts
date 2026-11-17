@@ -700,14 +700,18 @@ export class DesktopProjectService {
     const sourceEvents = source.events;
     const duplicatedEvents = rebaseForkedSessionEvents(sourceEvents);
     const content = duplicatedEvents.length ? `${duplicatedEvents.map((event) => JSON.stringify(event)).join("\n")}\n` : "";
-    await createSessionFile(dataRoot, targetSessionId, Buffer.from(content, "utf8"));
     const sourceCatalog = (await listSessionCatalog(dataRoot)).find((item) => item.id === sessionId);
-    await registerSessionBranch(dataRoot, {
-      sessionId: targetSessionId,
-      parentSessionId: sessionId,
-      branchPoint: { kind: "event", index: sourceCatalog?.summary.eventCount ?? 0 }
+    await createSessionFile(dataRoot, targetSessionId, Buffer.from(content, "utf8"), {
+      // Publish the inherited policy and metadata before exposing copied history.
+      beforeWrite: async () => {
+        await registerSessionBranch(dataRoot, {
+          sessionId: targetSessionId,
+          parentSessionId: sessionId,
+          branchPoint: { kind: "event", index: sourceCatalog?.summary.eventCount ?? 0 }
+        });
+        await this.copyCatalogMetadata(dataRoot, sourceCatalog, targetSessionId);
+      }
     });
-    await this.copyCatalogMetadata(dataRoot, sourceCatalog, targetSessionId);
     return targetSessionId;
   }
 

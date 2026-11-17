@@ -211,14 +211,14 @@ export class ToolExecutionCoordinator {
 
   /** Model-facing tool envelope. */
   createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }, options?: {
-    parentToolCallId?: string; auditOnly?: boolean; script?: boolean; discovery?: boolean; toolDiscoveryNames?: ReadonlySet<string>; toolDiscoveryModelNames?: ReadonlySet<string>; toolDiscoveryNamespace?: string;
+    parentToolCallId?: string; auditOnly?: boolean; script?: boolean; discovery?: boolean; searchCatalog?: boolean; toolDiscoveryNames?: ReadonlySet<string>; toolDiscoveryModelNames?: ReadonlySet<string>; toolDiscoveryNamespace?: string;
   }): AgentTool[] {
     let entries = this.context.toolRegistry.listEntries()
       .filter((entry) => options?.script
         ? (!this.executionToolNames || this.executionToolNames.has(entry.tool.name))
           && isCodeModeTool(entry)
           && isToolScriptCallable(entry.tool, !this.executionToolNames || !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name))
-        : isToolModelVisibleInMode(entry.tool, this.context.config.agent.toolExecutionMode) && (options?.discovery ? !this.executionToolNames || this.executionToolNames.has(entry.tool.name) : !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name)));
+        : isToolModelVisibleInMode(entry.tool, this.context.config.agent.toolExecutionMode) && (options?.discovery ? !this.executionToolNames || this.executionToolNames.has(entry.tool.name) : options?.searchCatalog || !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name)));
     const originalRegistrations = new Map(entries.map((entry) => [entry.tool.name, entry] as const));
     if (editing) {
       entries = routeEditingTools(entries, { workspaceRoot: this.context.workspaceRoot, ignore: this.context.config.workspace.ignore, attachmentRoot: editing.attachmentRoot }, editing.mode);

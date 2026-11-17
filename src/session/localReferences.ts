@@ -409,15 +409,19 @@ export class LocalReferenceService {
   }
 
   async allMessages(projectId: string): Promise<LocalReferenceResult[]> {
+    return this.messageReferences(projectId);
+  }
+
+  private async messageReferences(projectId: string, threadId?: string): Promise<LocalReferenceResult[]> {
     const project = this.project(projectId);
-    return (await this.sessions(project)).flatMap((session) => visibleMessages(session.events).map((message) => ({
+    return (await this.sessions(project, threadId)).flatMap((session) => visibleMessages(session.events).map((message) => ({
       kind: "message" as const, uri: localReferenceUri({ kind: "message", threadId: session.id, id: message.slotId }),
       label: message.content.slice(0, 80), content: message.content, projectId, threadId: session.id, messageId: message.messageId
     })));
   }
 
   async referenceForMessage(threadId: string, messageId: string, projectId: string): Promise<LocalReferenceResult> {
-    const message = (await this.allMessages(projectId)).find((item) => item.threadId === threadId && item.messageId === messageId);
+    const message = (await this.messageReferences(projectId, threadId)).find((item) => item.threadId === threadId && item.messageId === messageId);
     if (!message) throw new Error("Message is not available on the active path.");
     return message;
   }

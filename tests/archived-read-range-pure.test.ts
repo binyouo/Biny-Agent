@@ -21,7 +21,7 @@ const projectionFunctions = [
 const serializerFunctions = ["serializeToolResult", "jsonReplacer", "toolResultPreview", "safePrefix", "safeSuffix", "isHighSurrogate", "isLowSurrogate"];
 const secretFunctions = ["redactSensitiveValue", "redactSensitiveValueInternal", "isSensitiveFieldName"];
 const directCalls = new Set([
-  ...projectionFunctions, ...serializerFunctions, ...secretFunctions, "readResultLineRange",
+  ...projectionFunctions, ...serializerFunctions, ...secretFunctions, "readResultLineRange", "isRuntimeContext",
   "redactSecrets", "redactBrowserToolResult", "archiveToolResult", "formatToolError", "readStringField", "String", "Boolean", "createHash"
 ]);
 const methods = new Set([
@@ -114,7 +114,9 @@ function harness(root: string, failArchive = false): Api {
     check(found[0]!);
     return found[0]!.getText(coordinatorFile).replace(/^private\s+/u, "");
   }).join(",\n");
-  const declarations = redaction + browserRedaction + secrets + serialization + projection
+  const runtimeContext = /\bisRuntimeContext\s*\(/u.test(projection)
+    ? functions(source(root, "src/agent/context/runtimeContext.ts"), ["isRuntimeContext"]) : "";
+  const declarations = redaction + browserRedaction + secrets + serialization + runtimeContext + projection
     + constants(coordinatorFile, ["maxArchivedPreviewCharacters", "inlineResultPersistMaxBytes"])
     + functions(coordinatorFile, ["formatToolError", "readStringField"]);
   // Only the two source methods are placed in this inert object; the product

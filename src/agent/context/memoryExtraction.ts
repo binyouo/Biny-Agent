@@ -1,3 +1,4 @@
+import { isRuntimeContext } from "./runtimeContext.js";
 /** 对话记忆提取、临时记忆清理指令及容错操作数组协议。 */
 import type { AgentMessage } from "../core/types.js";
 import { parse, disableErrorLogging } from "best-effort-json-parser";
@@ -50,6 +51,7 @@ export function recentMemoryConversation(messages: readonly AgentMessage[]): Age
   const conversation: AgentMessage[] = [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
+    if (message.role === "user" && isRuntimeContext(message)) continue;
     if (message.role !== "user" && message.role !== "assistant") continue;
     const previous = conversation.at(-1);
     if (message.role === "assistant" && previous?.role === "assistant") {

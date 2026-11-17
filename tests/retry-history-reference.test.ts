@@ -32,7 +32,7 @@ for (const targetRole of ["user", "assistant"] as const) {
     assert.ok(target && "messageId" in target && target.messageId);
     await drain(f.agent.retry(target.messageId, { emotionAnalysis: false }));
     assert.equal(f.requests.length, 3);
-    const actual = f.requests.at(-1)!;
+    const actual = f.requests.at(-1)!.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content)));
     assert.equal(actual.length, 1, "the real budget selects zero earlier messages, including the oversized assistant retry source");
     assert.equal(actual[0]?.role, "user");
     assert.match(JSON.stringify(actual), /CURRENT_USER_MARKER/u);
@@ -84,14 +84,16 @@ async function fixture(t: TestContext) {
     async stream(context, options) {
       let text: string;
       if (options?.requestContext?.operation === "compaction") {
+        const source = JSON.stringify(context.messages).match(/\[source (m\d+) kind=message role=user\]/u)?.[1];
+        assert.ok(source);
         assert.match(JSON.stringify(context.messages), /CURRENT_USER_MARKER/u);
         assert.doesNotMatch(JSON.stringify(context.messages), /OLDER_USER_MARKER|HUGE_PRIOR_ANSWER/u);
         text = [
-          "## Goal", "- CURRENT_USER_MARKER. <!-- evidence:m0 -->",
+          "## Goal", `- CURRENT_USER_MARKER. <!-- evidence:${source} -->`,
           "## Constraints & Preferences", "- (none recorded)",
           "## Progress", "### Done", "- (none verified)", "### In Progress", "- (none recorded)", "### Blocked", "- (unknown)",
           "## Key Decisions", "- (none recorded)", "## Errors & Fixes", "- (none recorded)",
-          "## All User Messages", "- CURRENT_USER_MARKER. <!-- evidence:m0 -->",
+          "## All User Messages", `- CURRENT_USER_MARKER. <!-- evidence:${source} -->`,
           "## Next Steps", "- (none recorded)", "## Critical Context", "- (none recorded)"
         ].join("\n");
       } else {

@@ -587,3 +587,35 @@ for (const [action, state] of [["忽略此提示", "dismissed"], ["提取", "ext
     assert.ok(h.document.querySelector(".biny-recipe-ready-banner"), "The same recipe remains available in another session");
   });
 }
+
+for (const destination of ["same-project", "other-project", "unchanged"] as const) {
+  test(`late retry success preserves ${destination} navigation and subsequent retry routing`, async t => {
+    const h = await fixture(t);
+    h.api.openSession = async (projectId: string, sessionId: string) => {
+      const id = sessionId.slice("session-".length);
+      return { ...documentFor(id), session: { ...session(id), projectId },
+        events: [{ type: "user_message", content: `Discuss ${id}`, messageId: `user-${id}` }] };
+    };
+    await h.emit("onSessionHandoff", { projectId: "a", sessionId: "session-a" });
+    const gate = deferred<{ sessionId: string; runId: string; messageId: string }>();
+    const calls: unknown[][] = [];
+    h.api.retryPrompt = async (...args: unknown[]) => {
+      calls.push(args);
+      return calls.length === 1 ? gate.promise : { sessionId: args[1], runId: "next", messageId: "next" };
+    };
+    await h.click('button[aria-label="重新生成"]');
+    assert.equal(calls.length, 1);
+    const nextProject = destination === "other-project" ? "b" : "a";
+    const nextSession = destination === "unchanged" ? "a" : "b";
+    if (destination !== "unchanged") await h.emit("onSessionHandoff", { projectId: nextProject, sessionId: `session-${nextSession}` });
+    await h.React.act(async () => { gate.resolve({ sessionId: "session-a", runId: "run-a", messageId: "retry-a" }); await gate.promise; });
+    assert.ok(h.projectName()?.includes(`Project ${nextProject}`));
+    if (destination !== "unchanged") {
+      assert.ok(h.body().includes(`Discuss ${nextSession}`));
+      await h.click('button[aria-label="重新生成"]');
+      assert.deepEqual(calls[1]?.slice(0, 3), [nextProject, `session-${nextSession}`, `user-${nextSession}`],
+        "retry on the displayed conversation must retain its own session, not the stale receipt");
+    }
+    assert.ok(h.selectedTitle()?.includes(`Conversation ${nextSession}`));
+  });
+}

@@ -105,7 +105,7 @@ for (const mode of ["unknown", "supported", "disabled"] as const) test(`旧目�
     assert.deepEqual(requestWindows, [1_000_000, 1_000_000]);
     for (const body of requestBodies) {
       const request = JSON.parse(body) as { messages: Array<{ role: string; content: unknown }> };
-      const input = request.messages.filter(message => message.role === "user").at(-1);
+      const input = request.messages.filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1);
       assert.ok(Array.isArray(input?.content));
       assert.deepEqual(input.content.filter(part => part.type === "image_url"), [
         { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } }
