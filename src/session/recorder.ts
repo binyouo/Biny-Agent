@@ -616,11 +616,19 @@ export class SessionRecorder {
     if (raw.at(-1) !== 0x0a) {
       const lastNewline = raw.lastIndexOf(0x0a);
       const tail = raw.subarray(lastNewline + 1).toString("utf8");
+      let validTail = false;
       try {
         JSON.parse(tail);
+        validTail = true;
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+      }
+      if (validTail) {
+        // A failed append is not proof of corrupt JSON. Preserve the complete
+        // event and abort recovery rather than silently deleting durable data.
         writeSync(descriptor, "\n");
         raw = Buffer.concat([raw, Buffer.from("\n")]);
-      } catch {
+      } else {
         ftruncateSync(descriptor, lastNewline + 1);
         raw = raw.subarray(0, lastNewline + 1);
       }
