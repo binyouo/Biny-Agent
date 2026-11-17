@@ -402,10 +402,15 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     }
     if (pausedCancellation && cancelledTaskRunId && ((last.role === "user" && lastText.endsWith("Read the cancelled verification task."))
       || (last.role === "tool" && last.tool_call_id === "find-cancelled-task"))) {
-      if (!body.tools?.some((tool) => tool.function?.name === "TaskStatus")) {
-        return streamToolCall("find-cancelled-task", "ToolSearch", { query: "TaskStatus" });
+      if (body.tools?.some(tool => tool.function?.name === "TaskStatus")) {
+        return streamToolCall("probe-cancelled-task", "TaskStatus", { taskRunId: cancelledTaskRunId });
       }
-      return streamToolCall("probe-cancelled-task", "TaskStatus", { taskRunId: cancelledTaskRunId });
+      if (last.tool_call_id === "find-cancelled-task") {
+        assert.ok(body.tools?.some(tool => tool.function?.name === "ToolCall"));
+        assert.ok((JSON.parse(lastText).deferredTools as Array<{ name: string }>).some(tool => tool.name === "TaskStatus"));
+        return streamToolCall("probe-cancelled-task", "ToolCall", { name: "TaskStatus", arguments: { taskRunId: cancelledTaskRunId } });
+      }
+      return streamToolCall("find-cancelled-task", "ToolSearch", { query: "TaskStatus" });
     }
     if (last.role === "tool" && ["inspect-approval-task", "inspect-cancelled-task", "probe-cancelled-task"].includes(last.tool_call_id ?? "")) {
       taskStatusReads.push(JSON.parse(lastText) as { status: string; approval?: { approvalId: string } });
