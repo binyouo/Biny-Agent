@@ -102,6 +102,8 @@ const agentToolCallContentSchema = z.object({
   name: z.string(),
   arguments: z.record(z.string(), z.unknown()),
   invalid: z.boolean().optional(),
+  viaToolCall: z.literal(true).optional(),
+  geminiArgumentsJson: z.string().optional(),
   providerMetadata: z.record(z.string(), z.unknown()).optional()
 }).passthrough();
 const persistedAgentMessageSchema = z.discriminatedUnion("role", [

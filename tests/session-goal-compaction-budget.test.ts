@@ -114,6 +114,7 @@ interface TransformBindings {
   runBudget: { softStepLimit: number };
 }
 interface AdapterState {
+  model: { provider: string; modelId: string };
   config: { transformContext(messages: string[]): Promise<unknown[]>; onRequestContext(): Promise<void> };
   context: { messages: string[]; tools: [] };
   signal: AbortSignal;
@@ -174,6 +175,8 @@ function fixture(scenario: Scenario, operation = "agent turn", firstFinish = "le
     cloneDraftClaimEvidence: (value: unknown) => value,
     compactionPromptVersion: 4,
     projectMessageSentAt,
+    supportsNativeToolSearch: () => false,
+    declaredTools: (tools: unknown[]) => tools,
     appendCurrentContext: async () => undefined,
     toModelMessages: (messages: unknown[]) => messages
   }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as Extracted;
@@ -222,6 +225,7 @@ function fixture(scenario: Scenario, operation = "agent turn", firstFinish = "le
   });
   async function beforeProvider(): Promise<void> {
     await extracted.modelMessages({
+      model,
       config: { transformContext: transform, onRequestContext: async () => { counts.telemetry += 1; } },
       context: { messages: memory.history, tools: [] }, signal: controller.signal
     });

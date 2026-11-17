@@ -17,6 +17,10 @@ export function messageTokenCost(message: AgentMessage): number {
   message = projectMessageSentAt(message);
   if (message.role === "toolResult" && message.requestSnapshot) message = { ...message, ...message.requestSnapshot };
   let tokens = 4;
+  if (message.role === "toolResult" && message.toolName === "ToolSearch") {
+    const schemas = (message.details as { loadedToolSchemas?: unknown } | undefined)?.loadedToolSchemas;
+    if (schemas) tokens += estimateTokens(JSON.stringify(schemas));
+  }
   if (typeof message.content === "string") return tokens + estimateTokens(message.content);
   for (const part of message.content) {
     if (part.type === "text" || part.type === "reasoning") tokens += estimateTokens(part.text);

@@ -340,7 +340,7 @@ export class ContextMemory {
     if (total <= limit) return messages;
 
     const prunableIndexes = messages.reduce<number[]>((indexes, message, index) => {
-      if (message.role === "toolResult" && !isPrunedToolResult(message)) indexes.push(index);
+      if (message.role === "toolResult" && message.toolName !== "ToolSearch" && !isPrunedToolResult(message)) indexes.push(index);
       return indexes;
     }, []);
     if (!prunableIndexes.length) return messages;

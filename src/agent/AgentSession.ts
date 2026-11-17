@@ -1,4 +1,6 @@
+import { deferredDiscoveryTools, reviewedToolDigests, discoveryProtocol } from "./core/deferredToolSearch.js";
 import { isRuntimeContext, appendRuntimeContext } from "./context/runtimeContext.js";
+import { declaredTools, supportsNativeToolSearch } from "./core/nativeToolSearch.js";
 import { createVisionProjection } from "./context/visionProjection.js";
 import { boundComputerFrames } from "../computer/modelFrames.js";
 import { SelfieAlbum, selfiePrompt } from "./context/selfie.js";
@@ -2850,6 +2852,12 @@ export class AgentSession {
       }
     }
 
+    let discoveryHistory: readonly AgentMessage[] = messages;
+    let eagerToolNames = allowedToolNames;
+    if (runOptions.toolAccessSelection === "auto" && allowedToolNames && this.activeConfig.agent.toolExecutionMode === "direct") {
+      const reviewed = reviewedToolDigests(messages);
+      eagerToolNames = new Set([...allowedToolNames].filter(name => !reviewed.has(name)));
+    }
     const hashlineEdit = this.activeConfig.chat.hashlineEdit;
     const editingTools = (settings: ModelSettings) => {
       if (settings.model.supportsTools === false) return [];
@@ -2858,7 +2866,14 @@ export class AgentSession {
       const none = runOptions.capabilitySelection?.tools === "none" || runOptions.toolAccessSelection === "none"
         || Array.isArray(runOptions.toolAccessSelection) && runOptions.toolAccessSelection.length === 0;
       if (none) return [];
-      if (this.activeConfig.agent.toolExecutionMode !== "code_mode") return directTools;
+      if (this.activeConfig.agent.toolExecutionMode !== "code_mode") {
+        const protocol = discoveryProtocol(settings.model);
+        if (!protocol || !directTools.some(tool => tool.name === toolSearchToolName)) return directTools;
+        return deferredDiscoveryTools(directTools, eagerToolNames, () => discoveryHistory, names => {
+          const found = new Set([...names, ...coordinator.allowTools(names)]);
+          return coordinator.createAgentTools(editing).filter(tool => found.has(tool.name));
+        }, protocol, protocol === "anthropic" ? coordinator.createAgentTools(editing, { searchCatalog: true }) : undefined);
+      }
       return [...directTools, coordinator.createCodeModeTool(editing)];
     };
     const referenceByMessage = new WeakMap<AgentMessage, SessionMessageReference>();
@@ -2885,7 +2900,7 @@ export class AgentSession {
       await refreshEmotion(messages);
       loopContext = { systemPrompt, messages: [...messages], tools: initialTools };
       // schema 在首轮 provider 请求与任何 tool.started 之前统一规范化并校验。
-      this.contextMemory.recordToolSchema(loopContext.tools);
+      this.contextMemory.recordToolSchema(declaredTools(initialTools, messages, supportsNativeToolSearch(activeModelSettings.model)));
     } catch (error) {
       const message = errorMessage(error);
       const outcome = failedTurn(message, completedStepsBeforeRun, "provider_error");
@@ -3182,6 +3197,10 @@ export class AgentSession {
           if (this.sessionGoalUsageFailure) throw this.sessionGoalUsageFailure;
           return toolDiscoveryFailure !== undefined || this.sessionGoalBudgetStopped();
         },
+        resolveToolSearchTools: (names) => {
+          const added = new Set(coordinator.allowTools(names));
+          return editingTools(activeModelSettings).filter(tool => added.has(tool.name));
+        },
         prepareNextTurn: async ({ context, toolResults }) => {
           coordinator.assertCanContinue();
           const discovered = toolResults
@@ -3194,7 +3213,7 @@ export class AgentSession {
           this.contextMemory.observePromptModel(activeModelSettings.model.provider, activeModelSettings.model.modelId);
           const tools = editingTools(settings);
           context.systemPrompt = refreshRuntimeSystemPrompt(context.systemPrompt);
-          this.contextMemory.recordToolSchema(tools);
+          this.contextMemory.recordToolSchema(declaredTools(tools, context.messages, supportsNativeToolSearch(settings.model)));
           context.tools = [...tools];
           activeRequestContext = context;
           return {
@@ -3233,6 +3252,8 @@ export class AgentSession {
           };
         },
         onRequestContext: async (context) => {
+          discoveryHistory = context.messages;
+          this.contextMemory.recordToolSchema(context.tools);
           this.contextMemory.recordRequest({
             ...context,
             toolSources: new Map(this.options.toolRegistry.listEntries().map(({ tool, source }) => [tool.name, source])),

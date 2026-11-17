@@ -15,6 +15,7 @@ const session = parse("src/agent/AgentSession.ts");
 const memory = parse("src/agent/context/LocalMemory.ts");
 const memoryExtraction = parse("src/agent/context/memoryExtraction.ts");
 const runtimeContext = parse("src/agent/context/runtimeContext.ts");
+const nativeToolSearch = parse("src/agent/core/nativeToolSearch.ts");
 const native = parse("src/llm/nativeJson.ts");
 const adapter = parse("src/agent/core/vercelModelAdapter.ts");
 const loop = parse("src/agent/core/vercelAgentLoop.ts");
@@ -87,12 +88,13 @@ const pure = [
   text(prompts, fn(prompts, "stableSystemPromptForCache")),
   ...[metadata, usage].flatMap(file => file.statements.filter(ts.isFunctionDeclaration).map(node => text(file, node))),
   ...["beginDirectModelRequest", "recordDirectModelRequest", "recordDirectModelFailure", "fromVercelUsage", "fromVercelFinishReason"].map(name => text(adapter, fn(adapter, name))),
-  ...["completeStep", "turnContext", "assistantFromStep", "updateStepReasoningMetadata", "attachStreamedReasoningMetadata", "toolResultMessage", "retryableEmptySuccessfulResponse"].map(name => text(loop, fn(loop, name))),
+  ...["completeStep", "turnContext", "domainToolCall", "assistantFromStep", "updateStepReasoningMetadata", "attachStreamedReasoningMetadata", "toolResultMessage", "retryableEmptySuccessfulResponse"].map(name => text(loop, fn(loop, name))),
   ...["isRecord", "providerMetadata", "stringify", "errorMessage"].map(name => text(utils, fn(utils, name))),
   ...["normalizeToolParameters", "normalizeSchemaNode"].map(name => text(schema, fn(schema, name))),
   text(native, fn(native, "reportVercelMetrics")), text(session, fn(session, "modelIdentifier")),
   text(memoryExtraction, fn(memoryExtraction, "recentMemoryConversation")),
   text(runtimeContext, fn(runtimeContext, "isRuntimeContext")),
+  ...["supportsNativeToolSearch", "declaredTools", "loadedToolSchemas"].map(name => text(nativeToolSearch, fn(nativeToolSearch, name))),
   text(memory, fn(memory, "formatMemoryExtractionMessages"))
 ].join("\n");
 const code = `${pure}

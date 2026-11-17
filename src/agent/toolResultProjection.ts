@@ -179,6 +179,7 @@ export async function projectToolResultsForModel(
   const projected = [...messages];
   let changed = false;
   for (const entry of entries) {
+    if (entry.message.toolName === "ToolSearch") continue;
     if (entry.message.content.some((part) => part.type !== "text")) continue;
     const replacement = replacements.get(entry.index);
     if (replacement) {
@@ -216,6 +217,7 @@ export async function projectToolResultsForModel(
     const recentSteps = new Set(entries.filter((entry) => recentIndexes.has(entry.index)).map((entry) => entry.step));
     for (const [position, entry] of entries.entries()) {
       if (retainedBytes <= limit) break;
+      if (entry.message.toolName === "ToolSearch") continue;
       if (recentIndexes.has(entry.index) || recentSteps.has(entry.step)
         || entry.message.content.some((part) => part.type !== "text")) continue;
       const current = projected[entry.index];
