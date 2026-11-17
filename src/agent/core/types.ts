@@ -25,6 +25,9 @@ export type AgentToolCallContent = {
   name: string;
   arguments: Record<string, unknown>;
   invalid?: boolean;
+  viaToolCall?: true;
+  /** Gemini 签名覆盖原始参数字符串，包括空白。 */
+  geminiArgumentsJson?: string;
   providerMetadata?: Record<string, unknown>;
 };
 export type AgentToolResultContent = AgentTextContent | AgentImageContent;
@@ -39,6 +42,10 @@ export interface AgentUserMessage {
   content: string | Array<AgentTextContent | AgentImageContent | AgentAudioContent>;
   /** 仅宿主注入瞬态上下文时保存原文；清理和遥测不能靠用户可输入的文本标记识别来源。 */
   originalContent?: AgentUserMessage["content"];
+  /** 宿主追加的日期上下文；不能从用户可输入的正文标记推断。 */
+  runtimeDateContext?: true;
+  /** 宿主状态快照，随模型历史保留，不作为用户输入或回合边界。 */
+  runtimeContext?: string;
   /** 这一轮实际用于表达的心境，随消息恢复，不替代用户原文。 */
   emotionSnapshot?: string;
   /** 原始消息发送时间及当时记录的时区；独立于本轮当前时间和正文中的事件时间。 */
@@ -57,11 +64,14 @@ export interface AgentAssistantMessage {
 }
 
 export interface AgentToolResultMessage {
+  viaToolCall?: true;
   role: "toolResult";
   toolCallId: string;
   toolName: string;
   content: AgentToolResultContent[];
   details?: unknown;
+  /** 已发送的有界模型投影；原始工具事实保留在 content/details。 */
+  requestSnapshot?: { content: AgentToolResultContent[]; details?: unknown };
   isError?: boolean;
   timestamp?: number;
 }
@@ -154,6 +164,8 @@ export interface AgentToolResult<TDetails = unknown> {
 export type AgentToolUpdate = (update: AgentToolResult) => void;
 
 export interface AgentTool {
+  anthropicDeferredDigest?: string;
+  deferredTarget?(name: string): AgentTool | undefined;
   providerTool?: "openai-apply-patch";
   promptSnippet?: string;
   promptGuidelines?: string[];
@@ -207,6 +219,7 @@ export interface ModelStreamOptions {
 }
 
 export interface AgentModel {
+  wireProtocol?: "chat" | "responses" | "anthropic" | "gemini";
   provider: string;
   providerAlias?: string;
   modelId: string;
@@ -285,6 +298,8 @@ export interface AgentLoopConfig {
   maxRetries?: number;
   tools: AgentTool[];
   modelOptions?: ModelStreamOptions;
+  /** 发现成功后，经当前权限范围解析可加载工具；不从模型提供的 schema 执行。 */
+  resolveToolSearchTools?: (names: readonly string[]) => AgentTool[];
   maxSteps?: number;
   /** 观察最终送入模型的上下文，不改变请求；每个 provider step 在剪枝后调用。 */
   onRequestContext?: (context: ModelStreamContext) => Promise<void> | void;

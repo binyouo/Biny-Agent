@@ -12,14 +12,14 @@ const require = createRequire(import.meta.url);
 const googleSource = path.resolve(path.dirname(require.resolve("@ai-sdk/google")), "../src/convert-to-google-messages.ts");
 const directCalls = new Set([
   "isRecord", "providerMetadata", "stringify", "fromVercelFinishReason", "fromVercelUsage",
-  "orderHistoricalPatchResults", "boundComputerFrames", "projectMessageSentAt", "assistantSnapshot",
+  "orderHistoricalPatchResults", "boundComputerFrames", "projectMessageSentAt", "assistantSnapshot", "domainToolCall",
   "emptyAssistant", "errorMessage", "parseWidgetPreview", "String", "readProviderOpts", "injectSkipSignature",
   "resolveFullMediaType", "convertToBase64", "resolveProviderReference", "isFullMediaType", "secureJsonParse",
-  "appendToolResultParts", "appendLegacyToolResultParts", "onWarning"
+  "appendToolResultParts", "appendLegacyToolResultParts", "onWarning", "loadedToolSchemas", "deferredArguments", "anthropicToolReferenceResult"
 ]);
 // Calls must be native operations on these reviewed local roots, not arbitrary imported APIs.
 const propertyCalls: Readonly<Record<string, readonly string[]>> = {
-  Array: ["isArray", "from"], Date: ["now", "parse"], Number: ["isFinite"], JSON: ["stringify"],
+  Array: ["isArray", "from"], Date: ["now", "parse"], Number: ["isFinite"], JSON: ["stringify", "parse"],
   Buffer: ["byteLength"], performance: ["now"], content: ["push", "map"],
   state: ["clear", "values", "map", "set", "get", "delete", "some", "push"],
   messages: ["map"], message: ["map", "some", "join", "startsWith"], ordered: ["push"], patchResults: ["push"],
@@ -123,8 +123,10 @@ function repairReturnProjection(): string {
   return `function repairSuccessProjection(toolCall, toolName, input, renamed, changed) {\n${suffix.map(node => node.getText(source)).join("\n")}\n}`;
 }
 const source = [
-  select(path.join(root, "src/agent/core/vercelAgentLoop.ts"), ["assistantFromStep", "assistantSnapshot", "handleVercelStreamPart", "emptyAssistant"]),
+  select(path.join(root, "src/agent/core/vercelAgentLoop.ts"), ["domainToolCall", "assistantFromStep", "assistantSnapshot", "handleVercelStreamPart", "emptyAssistant"]),
   select(path.join(root, "src/agent/core/vercelModelAdapter.ts"), ["toModelMessages", "orderHistoricalPatchResults", "fromVercelUsage", "fromVercelFinishReason"]),
+  select(path.join(root, "src/agent/core/deferredToolSearch.ts"), ["deferredArguments"]),
+  select(path.join(root, "src/agent/core/nativeToolSearch.ts"), ["loadedToolSchemas"]),
   select(path.join(root, "src/agent/core/vercelAgentUtils.ts"), ["isRecord", "providerMetadata", "stringify"]),
   select(path.join(root, "src/agent/modelMessages.ts"), ["projectMessageSentAt"]),
   select(path.join(root, "src/computer/modelFrames.ts"), ["boundComputerFrames"]),
@@ -168,7 +170,7 @@ const calls = ["a", "b"].map(label => ({ type: "tool-call", toolCallId: `call-${
 const step = { content: [calls[0]!, { type: "text", text: "Between" }, calls[1]!], finishReason: "tool-calls",
   usage: { inputTokens: 1, outputTokens: 2, inputTokenDetails: {}, outputTokenDetails: {} } };
 freeze(step);
-const canonical = () => invoke<Assistant>("assistantFromStep(input)", step);
+const canonical = () => invoke<Assistant>("assistantFromStep(input, { tools: [] })", step);
 const convert = (message: Assistant) => invoke<InputMessage[]>("toModelMessages([input])", message);
 const modelParts = (value: GooglePrompt) => value.contents.flatMap(item => item.parts).filter(part => part.functionCall);
 
@@ -227,7 +229,7 @@ test("streamed calls and snapshots keep per-call metadata and reset at the next 
 });
 
 test("old absent metadata shapes, invalid flags and historical patch projection are unchanged", () => {
-  const message = invoke<Assistant>("assistantFromStep(input)", { ...step, content: [
+  const message = invoke<Assistant>("assistantFromStep(input, { tools: [] })", { ...step, content: [
     { type: "tool-call", toolCallId: "old", toolName: "inspect", input: {}, invalid: true }
   ] });
   assert.deepEqual(message.content, [{ type: "toolCall", id: "old", name: "inspect", arguments: {}, invalid: true }]);
@@ -296,7 +298,7 @@ test("non-record input normalization drops metadata in completed and streamed ca
   }));
   const before = structuredClone(parts);
   freeze(parts);
-  const completed = invoke<Assistant>("assistantFromStep(input)", { ...step, content: parts });
+  const completed = invoke<Assistant>("assistantFromStep(input, { tools: [] })", { ...step, content: parts });
   const streamed = invoke<Assistant>(`(() => {
     const state = {currentText:'', currentReasoning:new Map(), currentToolCalls:[], widgetInputs:new Map(), tools:[]};
     for (const part of input) handleVercelStreamPart(state,part);
@@ -317,7 +319,7 @@ test("record inputs retain metadata even when SDK marks the call invalid", () =>
     input: { path: "fixture.txt" }, invalid: true, providerMetadata: metadata("record-invalid") }];
   const before = structuredClone(parts);
   freeze(parts);
-  const completed = invoke<Assistant>("assistantFromStep(input)", { ...step, content: parts });
+  const completed = invoke<Assistant>("assistantFromStep(input, { tools: [] })", { ...step, content: parts });
   const streamed = invoke<Assistant>(`(() => {
     const state = {currentText:'', currentReasoning:new Map(), currentToolCalls:[], widgetInputs:new Map(), tools:[]};
     for (const part of input) handleVercelStreamPart(state,part);
