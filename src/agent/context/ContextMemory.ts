@@ -1,3 +1,4 @@
+import { isRuntimeContext, appendRuntimeContext, renderRuntimeContext } from "./runtimeContext.js";
 import { hasNativeMediaContent } from "../../attachments/input.js";
 import { attachmentMessageParts } from "../../attachments/store.js";
 import { estimateContextBreakdown, estimateMessageTokens, estimateTokens, messageTokenCost, type ContextTokenInput } from "./tokenUsage.js";
@@ -291,6 +292,7 @@ export class ContextMemory {
       return {
         systemPrompt: assembly.systemPrompt,
         messages: assembly.messages,
+        historyMessageCount: assembly.historyMessageCount,
         loadedSkills: typeof resolvedPrompt === "string" || !resolvedPrompt.loadedSkills?.length
           ? undefined
           : [...resolvedPrompt.loadedSkills],
@@ -338,7 +340,7 @@ export class ContextMemory {
     if (total <= limit) return messages;
 
     const prunableIndexes = messages.reduce<number[]>((indexes, message, index) => {
-      if (message.role === "toolResult" && !isPrunedToolResult(message)) indexes.push(index);
+      if (message.role === "toolResult" && message.toolName !== "ToolSearch" && !isPrunedToolResult(message)) indexes.push(index);
       return indexes;
     }, []);
     if (!prunableIndexes.length) return messages;
@@ -981,18 +983,22 @@ function prepareCompaction(
 ): CompactionPlan | undefined {
   if (!messages.length) return undefined;
   const validCutPoints = messages
-    .map((message, index) => message.role === "user" || message.role === "assistant" ? index : -1)
+    .map((message, index) => (message.role === "user" && !isRuntimeContext(message)) || message.role === "assistant" ? index : -1)
     .filter((index) => index >= 0);
   const totalTokens = estimateMessageTokens(messages);
   if (!force && totalTokens <= keepRecentTokens) return undefined;
 
   const suffixTokens = new Array<number>(messages.length).fill(0);
+  const suffixMessageCounts = new Array<number>(messages.length).fill(0);
   let accumulated = 0;
+  let messageCount = 0;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (!message) continue;
     accumulated += messageTokenCost(message);
+    if (message.role !== "user" || !isRuntimeContext(message)) messageCount += 1;
     suffixTokens[index] = accumulated;
+    suffixMessageCounts[index] = messageCount;
   }
   // 取“能落进 recent budget 的最早安全边界”，从而优先保留完整最近回合；如果最后一个
   // assistant + tool-result 批次本身就超限，也整批保留，绝不把调用和结果拆开。
@@ -1000,13 +1006,15 @@ function prepareCompaction(
     ?? validCutPoints.at(-1)
     ?? 0;
   // keepRecentMessages 是第二个上限：同样取满足条数约束的最早安全边界，最后一个批次
-  // 本身超过条数时整批保留。与 token 上限取更保守（保留更少）的切分点。
+  // 本身超过条数时整批保留。运行时状态计入 token，但不挤占近期对话条数。
   const cutByMessages = keepRecentMessages === undefined
     ? undefined
-    : validCutPoints.find((candidate) => messages.length - candidate <= keepRecentMessages)
+    : validCutPoints.find((candidate) => (suffixMessageCounts[candidate] ?? Number.MAX_SAFE_INTEGER) <= keepRecentMessages)
       ?? validCutPoints.at(-1)
       ?? 0;
-  const cutIndex = Math.max(cutByTokens, cutByMessages ?? 0);
+  let cutIndex = Math.max(cutByTokens, cutByMessages ?? 0);
+  // 前置运行时状态没有独立的会话事实，不能单独成为一次压缩材料。
+  if (messages.slice(0, cutIndex).every(isRuntimeContext)) cutIndex = 0;
 
   if (cutIndex <= 0) {
     if (!force) return undefined;
@@ -1023,7 +1031,8 @@ function prepareCompaction(
 
 function findTurnStart(messages: AgentMessage[], beforeIndex: number): number {
   for (let index = beforeIndex - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === "user") return index;
+    const message = messages[index];
+    if (message?.role === "user" && !isRuntimeContext(message)) return index;
   }
   return -1;
 }
@@ -1075,6 +1084,7 @@ function escapeCompactionData(value: string): string {
 }
 
 function formatMessageForSummary(message: AgentMessage, index: number): string {
+  if (message.role === "user" && isRuntimeContext(message)) return `[Runtime ${message.runtimeDateContext ? "date" : message.runtimeContext} context] ${messageText(message)}`;
   const messageSource = `m${String(index)}`;
   if (message.role === "toolResult") {
     const archives = archivePaths(message).map((archivePath, archiveIndex) =>
@@ -1145,7 +1155,7 @@ function deterministicSummary(
   hint: string | undefined,
   maxTokens: number
 ): string {
-  const userMessages = messages.filter((message) => message.role === "user").map(message => messageText(projectMessageSentAt(message)));
+  const userMessages = messages.filter((message) => message.role === "user" && !isRuntimeContext(message)).map(message => messageText(projectMessageSentAt(message)));
   const assistantMessages = messages.filter((message) => message.role === "assistant").map(messageText);
   const toolMessages = messages
     .filter((message): message is AgentToolResultMessage => message.role === "toolResult")
@@ -1775,6 +1785,7 @@ function estimateRestoredBudget(history: AgentMessage[], limits: ModelContextBud
 }
 
 interface ContextAssembly {
+  historyMessageCount: number;
   systemPrompt?: string;
   messages: AgentMessage[];
   budget: ContextBudgetStatus;
@@ -1782,6 +1793,7 @@ interface ContextAssembly {
 }
 
 export interface PreparedAgentContext {
+  historyMessageCount: number;
   systemPrompt?: string;
   messages: AgentMessage[];
   loadedSkills?: string[];
@@ -1850,7 +1862,7 @@ function assembleContext(
     disposition: taskContent === task ? "included" : "trimmed"
   });
   const dateTokens = dateContext ? estimateTokens(dateContext) + 4 : 0;
-  if (dateContext) components.push({ id: "local date", requestedTokens: dateTokens, usedTokens: dateTokens, disposition: "included" });
+  // 日期在实际请求前采样并追加；这里只预留空间，不计为已经发送的内容。
   const emotionContext = includeInput
     ? turnContext.match(/<!-- biny-emotion:start -->[\s\S]*?<!-- biny-emotion:end -->/u)?.[0] ?? "" : "";
   const auxiliaryContext = emotionContext ? turnContext.replace(emotionContext, "").trim() : turnContext;
@@ -1929,11 +1941,22 @@ function assembleContext(
   // 三类真值各有上限，避免超长系统提示把项目约束或压缩 checkpoint 完全挤掉。
   addSystem("system rules", systemPrompt, true, Math.max(1, Math.floor(usableTokens * 0.45)));
   addSystem("project instructions", projectInstructions, true, Math.max(1, Math.floor(usableTokens * 0.30)));
+  const stableSystemParts = systemParts.length;
+  const workspaceComponentStart = components.length;
+  const workspaceEnvelopeReserve = Math.min(remaining, messageTokenCost({ role: "user", content: renderRuntimeContext("workspace", "") }));
+  remaining -= workspaceEnvelopeReserve;
   addSystem("explicit paths", explicitPaths, false);
   addSystem("recent workspace activity", recentActivity, false);
   addSystem("RepoMap candidates", repoMap, false);
   addSystem("project snapshot", projectSnapshot, false);
 
+  const workspaceContext = systemParts.splice(stableSystemParts).join("\n\n");
+  const workspaceSnapshot: AgentMessage[] = [];
+  appendRuntimeContext(workspaceSnapshot, "workspace", workspaceContext);
+  const workspaceCharge = components.slice(workspaceComponentStart).reduce((sum, component) => sum + component.usedTokens, 0);
+  const workspaceEnvelopeTokens = Math.max(0, estimateMessageTokens(workspaceSnapshot) - workspaceCharge);
+  remaining += workspaceEnvelopeReserve - workspaceEnvelopeTokens;
+  if (workspaceSnapshot.length) components.push({ id: "workspace context envelope", requestedTokens: workspaceEnvelopeTokens, usedTokens: workspaceEnvelopeTokens, disposition: "included" });
   const selectedHistory = preserveHistory ? history : selectHistory(history, remaining);
   const usedHistoryTokens = estimateMessageTokens(selectedHistory);
   remaining -= usedHistoryTokens;
@@ -2001,13 +2024,13 @@ function assembleContext(
   }
 
   // 空输入续接沿用历史事实，不把占位文字或动态参考资料伪装成用户新消息。
-  const messages: AgentMessage[] = includeInput
-    ? [...selectedHistory, withUserContext(userContent, includedTurnContext, includedMemory)]
-    : [...selectedHistory];
-  if (dateContext) systemParts.push(dateContext);
+  const messages: AgentMessage[] = [...selectedHistory];
+  appendRuntimeContext(messages, "workspace", workspaceContext);
+  if (includeInput) messages.push(withUserContext(userContent, includedTurnContext, includedMemory));
   const assembledSystemPrompt = systemParts.join("\n\n") || undefined;
   const usedTokens = estimateMessageTokens(messages) + estimateTokens(assembledSystemPrompt ?? "") + usedCheckpointTokens;
   return {
+    historyMessageCount: selectedHistory.length,
     systemPrompt: assembledSystemPrompt,
     messages,
     includedMemoryMatches,
@@ -2131,7 +2154,7 @@ function takeRecentMessages(messages: AgentMessage[], maxTokens: number): AgentM
 function groupConversationTurns(messages: AgentMessage[]): AgentMessage[][] {
   const turns: AgentMessage[][] = [];
   for (const message of messages) {
-    if (message.role === "user" || turns.length === 0) turns.push([]);
+    if ((message.role === "user" && !isRuntimeContext(message)) || turns.length === 0) turns.push([]);
     turns.at(-1)?.push(message);
   }
   return turns;

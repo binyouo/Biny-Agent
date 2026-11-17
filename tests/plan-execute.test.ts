@@ -250,7 +250,7 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     };
     const messages = body.messages ?? [];
     const system = textContent(messages[0]?.content);
-    const lastText = textContent(messages.at(-1)?.content);
+    const lastText = textContent(messages.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)?.content);
     const names = new Set((body.tools ?? []).flatMap((tool) => tool.name ?? tool.function?.name ?? []));
     if (system.includes("tool search assistant")) return streamText('{"tools":["PlanStart"]}');
     if (system.includes("选择需要的工具")) return streamText('{"tools":[]}');
@@ -353,7 +353,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
       tools?: Array<{ function?: { name?: string } }>;
     };
     const system = textContent(body.messages[0]?.content);
-    const last = body.messages.at(-1)!;
+    const last = body.messages.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)!;
     const lastText = textContent(last.content);
     if (system.includes("tool search assistant")) {
       return streamText(JSON.stringify({ tools: [pausedCancellation && cancelledTaskRunId ? "TaskStatus" : planning ? "PlanDraft" : "PlanStart"] }));
@@ -402,10 +402,15 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     }
     if (pausedCancellation && cancelledTaskRunId && ((last.role === "user" && lastText.endsWith("Read the cancelled verification task."))
       || (last.role === "tool" && last.tool_call_id === "find-cancelled-task"))) {
-      if (!body.tools?.some((tool) => tool.function?.name === "TaskStatus")) {
-        return streamToolCall("find-cancelled-task", "ToolSearch", { query: "TaskStatus" });
+      if (body.tools?.some(tool => tool.function?.name === "TaskStatus")) {
+        return streamToolCall("probe-cancelled-task", "TaskStatus", { taskRunId: cancelledTaskRunId });
       }
-      return streamToolCall("probe-cancelled-task", "TaskStatus", { taskRunId: cancelledTaskRunId });
+      if (last.tool_call_id === "find-cancelled-task") {
+        assert.ok(body.tools?.some(tool => tool.function?.name === "ToolCall"));
+        assert.ok((JSON.parse(lastText).deferredTools as Array<{ name: string }>).some(tool => tool.name === "TaskStatus"));
+        return streamToolCall("probe-cancelled-task", "ToolCall", { name: "TaskStatus", arguments: { taskRunId: cancelledTaskRunId } });
+      }
+      return streamToolCall("find-cancelled-task", "ToolSearch", { query: "TaskStatus" });
     }
     if (last.role === "tool" && ["inspect-approval-task", "inspect-cancelled-task", "probe-cancelled-task"].includes(last.tool_call_id ?? "")) {
       taskStatusReads.push(JSON.parse(lastText) as { status: string; approval?: { approvalId: string } });
@@ -681,7 +686,7 @@ async function testHostReadOnlyReportPlan(): Promise<void> {
       tools?: Array<{ function?: { name?: string } }>;
     };
     const system = textContent(body.messages[0]?.content);
-    const last = body.messages.at(-1)!;
+    const last = body.messages.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)!;
     const names = (body.tools ?? []).map((tool) => tool.function?.name);
     if (system.includes("tool search assistant")) return streamText('{"tools":["PlanDraft"]}');
     if (system.includes("选择需要的工具")) return streamText('{"tools":[]}');

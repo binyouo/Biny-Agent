@@ -21,8 +21,6 @@ Biny 帮你在本地项目中对话、处理开发任务，并把会话和记忆
 | 文件、浏览器与电脑操作 | 读写项目文件、执行受控命令、操作内置浏览器，并在授权后观察和操作 macOS 应用。 |
 | 交互式可视化 | 在 Desktop 对话中生成可交互的 HTML/SVG 图表与页面，也可导出独立页面。 |
 | 模型与扩展 | 自选模型服务商或 OpenAI-compatible 接口，通过 MCP、Plugins、Skills 和子代理扩展工具与工作流。 |
-| 自拍与虚拟旅行 | 按设定外观生成自拍、管理相册，并用虚拟旅行记录想象中的见闻与日记。 |
-
 ## 快速开始
 
 macOS 用户可在 [Releases](https://github.com/binyouo/Biny-Agent/releases) 下载 App：Apple Silicon 选择 `arm64`，Intel 选择 `x64`；打开 DMG 后将 Biny 拖入 Applications。

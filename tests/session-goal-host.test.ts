@@ -49,7 +49,11 @@ const provider = createServer((request, response) => { void (async () => {
     : { name: "run_script", arguments: JSON.stringify({ description: "Run fixture workflow", code: `return await tools.${name}(${JSON.stringify(args)});` }) } }] });
   if (hold) { held = response; return; }
   if (goalReadsOnly) {
-    if ((body.messages.at(-1) as { role?: string })?.role === "tool") send(response, { content: "目标状态已核对，仍未产生工作证据。" });
+    const lastConversationMessage = body.messages.filter(message => {
+      const item = message as { role?: string; content?: unknown };
+      return item.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(item.content));
+    }).at(-1) as { role?: string } | undefined;
+    if (lastConversationMessage?.role === "tool") send(response, { content: "目标状态已核对，仍未产生工作证据。" });
     else send(response, call("Bash", { command: `${biny} goal show --json` }), "tool_calls");
     return;
   }

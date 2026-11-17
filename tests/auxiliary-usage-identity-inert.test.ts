@@ -11,6 +11,7 @@ import type { AgentConfig, ModelAliasConfig } from "../src/config/schema.js";
 import type { SessionEvent, SessionUsage } from "../src/session/recorder.js";
 import { createSessionUsage, summarizeUsage } from "../src/observability/usage.js";
 import { normalizeMemoryOriginAnchors } from "../src/agent/context/memoryFormat.js";
+import { isRuntimeContext } from "../src/agent/context/runtimeContext.js";
 import { redactSecrets } from "../src/utils/redaction.js";
 
 // Only source-selected declarations are evaluated. No AgentSession, native helper,
@@ -153,7 +154,7 @@ const allowedCalls = new Set([
   "this.catalogs.get", "this.catalogs.get(providerAlias)?.find", "catalogEntryToModel", "catalogModelAlias", "entries.find", "this.forModel", "registry.createModelSettings", "registry.forModel",
   "provider.createModelSettings", "createModelSettings", "createProxyAwareFetch", "new ProviderRegistry(config, [], undefined, undefined, fetcher, credentials).createModelSettings",
   "options.onRequestMetrics", "randomUUID", "new Date(startedAtMs).toISOString", "Math.max", "Date.now", "String",
-  "response.trim", "text.match", "parse", "operations.push", "text.includes", "events.flatMap"
+  "response.trim", "text.match", "parse", "operations.push", "text.includes", "events.flatMap", "isRuntimeContext"
 ]);
 const allowedNew = new Set(["Error", "LocalMemory", "MemoryStorage", "Date", "Set", "Map", "WeakMap", "ModelRegistry", "ProviderRegistry", "ModelRuntime"]);
 const unexpectedCalls = new Set<string>();
@@ -282,7 +283,7 @@ function fixture(options: { alias?: string; sameId?: boolean; unpriced?: boolean
     readDailyMemoryNote: async () => "Synthetic completed turn.",
     readDailyMemorySection: (_note: string, section: string) => section === "聊天摘要" ? "Synthetic completed turn." : undefined,
     upsertDailyMemorySection: async () => undefined,
-    DailyMemorySectionConflictError: class extends Error {}, summarizeUsage, normalizeMemoryOriginAnchors, redactSecrets, parse: JSON.parse,
+    DailyMemorySectionConflictError: class extends Error {}, summarizeUsage, normalizeMemoryOriginAnchors, isRuntimeContext, redactSecrets, parse: JSON.parse,
     memoryExtractionPrompt: "Extract important memories.", memoryTimeAnchorInstruction: "Keep dates.", memoryModelTimeoutMs: 30_000,
     MemoryStorage: class { constructor() {} },
     createProxyAwareFetch: () => () => { throw new Error("Network is forbidden"); },
