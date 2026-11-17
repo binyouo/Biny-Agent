@@ -183,7 +183,7 @@ export function ChatScroll({ children, followBottom = false, onScrolledChange, s
         type="button"
       >
         {streaming
-          ? <ThinkingOrb aria-hidden="true" className="biny-jump-bottom-orb" size={20} state="solving" theme="auto" />
+          ? <ThinkingOrb aria-hidden="true" className="biny-jump-bottom-orb" paused={!jumpVisible} size={20} state="solving" theme="auto" />
           : <Icon name="arrow-down" size={16} />}
       </button>
     </>

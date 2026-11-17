@@ -11,7 +11,6 @@ import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { globalAgentDir, projectSessionsDir, workspaceAgentDir } from "../config/paths.js";
 import { sameSessionFingerprint } from "./parseCache.js";
-import { readBoundedSessionHandle } from "./limits.js";
 
 const sessionMetadataConcurrency = 8;
 
@@ -38,13 +37,6 @@ interface SessionStorageLocation {
 interface SessionFileEntry {
   fileName: string;
   filePath: string;
-}
-
-export interface SessionFileSnapshot {
-  filePath: string;
-  fileName: string;
-  bytes: Buffer;
-  stat: Stats;
 }
 
 export interface SessionDeleteHooks {
@@ -157,12 +149,6 @@ export async function resolveSessionFile(workspaceRoot: string, session: string 
   return await resolveSessionFileAt(location, session);
 }
 
-export async function readSessionSnapshot(workspaceRoot: string, session: string | undefined): Promise<SessionFileSnapshot> {
-  const location = await resolveSessionStorage(workspaceRoot);
-  const filePath = await resolveSessionFileAt(location, session);
-  return await readSessionSnapshotAt(location, filePath);
-}
-
 /** 历史读取仍校验文件绑定；读取期间变化的文件不能发布成完整缓存。 */
 export async function readSessionFileOrCached<T>(
   workspaceRoot: string,
@@ -184,32 +170,6 @@ export async function readSessionFileOrCached<T>(
     throw new Error(`Session changed repeatedly while reading history: ${path.basename(filePath)}`);
   } finally {
     await handle.close();
-  }
-}
-
-export async function duplicateSessionFile(workspaceRoot: string, sourceSession: string, targetSessionId: string): Promise<string> {
-  const location = await resolveSessionStorage(workspaceRoot);
-  const sourcePath = await resolveSessionFileAt(location, sourceSession);
-  const source = await readSessionSnapshotAt(location, sourcePath);
-  const targetPath = sessionFilePath(location.workspace.path, targetSessionId);
-  let handle: FileHandle | undefined;
-  let identity: Pick<Stats, "dev" | "ino"> | undefined;
-  let completed = false;
-  try {
-    await assertSessionStorage(location);
-    await ensureSessionDirectory(location, path.dirname(targetPath));
-    handle = await fs.open(targetPath, writeNewFlags(), 0o600);
-    const stat = await assertSessionBinding(location, targetPath, handle);
-    identity = { dev: stat.dev, ino: stat.ino };
-    await handle.chmod(0o600);
-    await handle.writeFile(source.bytes);
-    await handle.sync();
-    await assertSessionBinding(location, targetPath, handle);
-    completed = true;
-    return targetPath;
-  } finally {
-    await handle?.close().catch(() => undefined);
-    if (!completed && identity) await removeBoundSessionFile(location, targetPath, identity);
   }
 }
 
@@ -622,20 +582,6 @@ async function isSessionFileParentBound(location: SessionStorageLocation, filePa
     throw new Error("Session directory resolves outside the current project's global session directory.");
   }
   return true;
-}
-
-async function readSessionSnapshotAt(location: SessionStorageLocation, filePath: string): Promise<SessionFileSnapshot> {
-  const fileName = path.basename(filePath);
-  const handle = await openSessionHandle(location, filePath);
-  try {
-    await assertSessionBinding(location, filePath, handle);
-    // 原始快照也供复制使用；超限必须拒绝，不能把尾部固化为新会话。
-    const bytes = await readBoundedSessionHandle(handle, fileName);
-    const stat = await assertSessionBinding(location, filePath, handle);
-    return { filePath, fileName, bytes, stat };
-  } finally {
-    await handle.close();
-  }
 }
 
 async function openSessionHandle(location: SessionStorageLocation, filePath: string, writable = false): Promise<FileHandle> {

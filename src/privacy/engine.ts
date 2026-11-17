@@ -1,6 +1,6 @@
 import { redactionWanted, type RedactionSettings } from "./settings.js";
 import { findRuleHits } from "./rules.js";
-import { defaultStore, type RedactionStore } from "./store.js";
+import type { RedactionStore } from "./store.js";
 import { placeholderPattern } from "./crypto.js";
 
 export interface MaskHit { kind: string; placeholder: string; length: number }
@@ -27,7 +27,7 @@ function replaceSpans(text: string, spans: Span[], put: (kind: string, value: st
   return { text: out + text.slice(last), hits, segments };
 }
 
-export function maskText(text: string, settings: RedactionSettings, store: RedactionStore = defaultStore, field?: string): MaskTextResult {
+export function maskText(text: string, settings: RedactionSettings, store: RedactionStore, field?: string): MaskTextResult {
   if (!redactionWanted(settings)) return { text, hits: [], segments: [] };
   return replaceSpans(text, [...findRuleHits(text, field), ...store.find(text, field)], (kind, value) => store.register(kind, value));
 }
@@ -40,5 +40,3 @@ export function maskSentText(text: string, context: string, store: RedactionStor
   store.rememberSent(text, context, result.segments.map(({ start, end, kind }) => ({ start, end, kind })), route);
   return result;
 }
-
-export function restore(source: string): string { return defaultStore.restore(source); }

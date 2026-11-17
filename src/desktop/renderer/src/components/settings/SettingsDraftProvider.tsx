@@ -86,7 +86,8 @@ export function SettingsDraftProvider({
   onThemePreview,
   projectId,
   sessionId,
-  sessionRunning
+  sessionRunning,
+  appearance
 }: {
   active: boolean;
   loadSnapshot?: boolean;
@@ -98,6 +99,7 @@ export function SettingsDraftProvider({
   projectId?: string;
   sessionId?: string;
   sessionRunning: boolean;
+  appearance?: Pick<DesktopSettingsDraft, "themePreference" | "fontPreference">;
 }): React.JSX.Element {
   // 关掉设置窗口不销毁缓存：下次打开先用它渲染，后台再校验一次，
   // 避免每次都从零走一趟 IPC（这正是"进设置先看到正在加载"的来源）。
@@ -113,6 +115,10 @@ export function SettingsDraftProvider({
   const [draft, setDraft] = useState<DesktopSettingsDraft | undefined>(() =>
     initialCached === undefined ? undefined : draftFromSnapshot(initialCached)
   );
+  // 外观已由启动状态提供；首次配置读取期间也可编辑，取得 revision 后再进入原保存事务。
+  const [earlyAppearanceState, setEarlyAppearanceState] = useState<{ base: NonNullable<typeof appearance>; draft: NonNullable<typeof appearance> }>();
+  const appearanceDraft = earlyAppearanceState?.draft;
+  const earlyAppearance = useRef<{ base: NonNullable<typeof appearance>; draft: NonNullable<typeof appearance> } | undefined>(undefined);
   const [globalActivity, setGlobalActivity] = useState<DesktopActivitySettingsUpdate>();
   const globalActivityRef = useRef<DesktopActivitySettingsUpdate | undefined>(undefined);
   const [loadError, setLoadError] = useState<string>();
@@ -155,6 +161,13 @@ export function SettingsDraftProvider({
     // 依赖数组不含它们，闭包里读到的是旧值，会给快照挂错 key。
     reusableCacheRef.current = { key: cacheKeyRef.current };
     const nextDraft = draftFromSnapshot(next);
+    const early = earlyAppearance.current;
+    if (early) {
+      if (early.draft.themePreference !== early.base.themePreference) nextDraft.themePreference = early.draft.themePreference;
+      if (!sameJson(early.draft.fontPreference, early.base.fontPreference)) nextDraft.fontPreference = early.draft.fontPreference;
+      earlyAppearance.current = undefined;
+      setEarlyAppearanceState(undefined);
+    }
     // 保存期间其它分页仍可编辑；仅提交时未再修改的字段跟随服务端快照。
     setDraft((current) => current && submittedDraft ? {
       ...rebaseUneditedFields(current, submittedDraft, nextDraft),
@@ -164,7 +177,7 @@ export function SettingsDraftProvider({
     setSaveState(next.pendingRecovery ? "recovery_required" : "clean");
   }, []);
 
-  const { themePreference: draftTheme, fontPreference: draftFont } = draft ?? {};
+  const { themePreference: draftTheme, fontPreference: draftFont } = draft ?? appearanceDraft ?? {};
   useEffect(() => {
     if (!active || !draftTheme || !draftFont) return;
     onThemePreview(draftTheme);
@@ -250,16 +263,28 @@ export function SettingsDraftProvider({
       void saveGlobalPreference(async () => onThemePreview(await window.biny.setThemePreference(value)));
       return;
     }
+    if (!snapshotRef.current && appearance) {
+      const early = earlyAppearance.current ?? { base: appearance, draft: appearance };
+      earlyAppearance.current = { ...early, draft: { ...early.draft, themePreference: value } };
+      setEarlyAppearanceState(earlyAppearance.current);
+      return;
+    }
     setDraft((current) => current ? { ...current, themePreference: value } : current);
-  }, [onThemePreview, projectId, saveGlobalPreference]);
+  }, [appearance, onThemePreview, projectId, saveGlobalPreference]);
 
   const setFontPreference = useCallback((value: DesktopFontPreference): void => {
     if (!projectId) {
       void saveGlobalPreference(async () => onFontPreview(await window.biny.setFontPreference(value)));
       return;
     }
+    if (!snapshotRef.current && appearance) {
+      const early = earlyAppearance.current ?? { base: appearance, draft: appearance };
+      earlyAppearance.current = { ...early, draft: { ...early.draft, fontPreference: value } };
+      setEarlyAppearanceState(earlyAppearance.current);
+      return;
+    }
     setDraft((current) => current ? { ...current, fontPreference: value } : current);
-  }, [onFontPreview, projectId, saveGlobalPreference]);
+  }, [appearance, onFontPreview, projectId, saveGlobalPreference]);
 
   const updateActivityImmediately = useCallback((patch: DesktopActivitySettingsPatch): Promise<void> => {
     const operation = activityUpdateTailRef.current.then(async () => {
@@ -410,10 +435,14 @@ export function SettingsDraftProvider({
   }, []);
 
   const { dirtyCount, nonPreferenceDirtyCount } = useMemo(() => {
-    if (!snapshot || !draft) return { dirtyCount: 0, nonPreferenceDirtyCount: 0 };
+    if (!snapshot || !draft) {
+      const early = earlyAppearanceState;
+      return { dirtyCount: early ? Number(early.draft.themePreference !== early.base.themePreference)
+        + Number(!sameJson(early.draft.fontPreference, early.base.fontPreference)) : 0, nonPreferenceDirtyCount: 0 };
+    }
     const nonPreferenceDirtyCount = countNonPreferenceDirtyFields(snapshot, draft);
     return { dirtyCount: countPreferenceDirtyFields(snapshot, draft) + nonPreferenceDirtyCount, nonPreferenceDirtyCount };
-  }, [snapshot, draft]);
+  }, [snapshot, draft, earlyAppearanceState]);
   // 主题和字体只影响 DesktopStateStore，不会改变运行中的 Agent 配置。
   const preferencesOnly = dirtyCount > 0 && nonPreferenceDirtyCount === 0;
   const invalid = draft ? !validDraft(draft) : false;
@@ -460,13 +489,21 @@ export function SettingsDraftProvider({
 
   const discard = useCallback(async (): Promise<void> => {
     await releaseAllCredentials();
-    if (snapshot) {
-      adoptSnapshot(snapshot);
-      onThemePreview(snapshot.themePreference);
-      onFontPreview(snapshot.fontPreference);
+    const early = earlyAppearance.current;
+    earlyAppearance.current = undefined;
+    setEarlyAppearanceState(undefined);
+    if (early) {
+      onThemePreview(early.base.themePreference);
+      onFontPreview(early.base.fontPreference);
+    }
+    const currentSnapshot = snapshotRef.current;
+    if (currentSnapshot) {
+      adoptSnapshot(currentSnapshot);
+      onThemePreview(currentSnapshot.themePreference);
+      onFontPreview(currentSnapshot.fontPreference);
     }
     await window.biny.updateSettingsDraftState({ dirty: false, canSave: false, open: active }).catch(() => undefined);
-  }, [active, adoptSnapshot, onFontPreview, onThemePreview, releaseAllCredentials, snapshot]);
+  }, [active, adoptSnapshot, onFontPreview, onThemePreview, releaseAllCredentials]);
 
   // 即时保存只携带本次增量；依赖模型偏好的更新在队列内根据最新快照计算。
   const modelsSaveTailRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -623,6 +660,7 @@ export function SettingsDraftProvider({
   const value = useMemo<SettingsDraftContextValue>(() => ({
     snapshot,
     draft,
+    appearanceDraft,
     activity: draft?.activity ?? globalActivity?.activity,
     loadError,
     loading,
@@ -671,6 +709,7 @@ export function SettingsDraftProvider({
     dirtyCount,
     discard,
     draft,
+    appearanceDraft,
     globalActivity,
     invalid,
     loadError,

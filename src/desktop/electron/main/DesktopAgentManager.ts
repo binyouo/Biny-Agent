@@ -1203,55 +1203,55 @@ export class DesktopAgentManager {
     }
     const project = this.projects.requireProject(projectId);
     const current = await this.requireVersionedConfig().loadVersioned!(project.path);
-    let next = structuredClone(current.config);
+    let next = current.config;
     const credentialHandles = new Set<string>();
 
     if (input.memory !== undefined) {
-      next = configSchema.parse({
+      next = {
         ...next,
         context: {
           ...next.context,
           memory: input.memory
         }
-      });
+      };
     }
     if (input.identity !== undefined) {
-      next = configSchema.parse({
+      next = {
         ...next,
         context: {
           ...next.context,
           identity: input.identity
         }
-      });
+      };
     }
     if (input.compaction !== undefined) {
-      next = configSchema.parse({
+      next = {
         ...next,
         context: {
           ...next.context,
           compaction: input.compaction
         }
-      });
+      };
     }
-    if (input.rtkEnabled !== undefined) next = configSchema.parse({ ...next, agent: { ...next.agent, rtkEnabled: input.rtkEnabled } });
+    if (input.rtkEnabled !== undefined) next = { ...next, agent: { ...next.agent, rtkEnabled: input.rtkEnabled } };
     if (input.toolExecutionMode !== undefined) {
-      next = configSchema.parse({ ...next, agent: { ...next.agent, toolExecutionMode: input.toolExecutionMode } });
+      next = { ...next, agent: { ...next.agent, toolExecutionMode: input.toolExecutionMode } };
     }
     if (input.chatParams !== undefined) {
-      next = configSchema.parse({
+      next = {
         ...next,
         chat: input.chatParams
-      });
+      };
     }
     if (input.permission !== undefined) {
-      next = configSchema.parse({
+      next = {
         ...next,
         permission: input.permission
-      });
+      };
     }
     if (input.skills !== undefined) {
       const projectKey = createProjectSkillKey(project.path);
-      next = configSchema.parse({
+      next = {
         ...next,
         extensions: {
           ...next.extensions,
@@ -1261,21 +1261,22 @@ export class DesktopAgentManager {
             [projectKey]: input.skills.projectOverrides
           }
         }
-      });
+      };
     }
     if (input.activity !== undefined) {
-      next = configSchema.parse({
+      next = {
         ...next,
         // 分析和回忆策略都通过同一份版本化设置保存。
         activity: { ...next.activity, ...input.activity }
-      });
+      };
     }
     if (input.webSearch !== undefined) {
-      next = configSchema.parse({ ...next, web: { ...next.web, search: input.webSearch } });
+      next = { ...next, web: { ...next.web, search: input.webSearch } };
     }
     if (input.redaction !== undefined) {
-      next = configSchema.parse({ ...next, redaction: input.redaction });
+      next = { ...next, redaction: input.redaction };
     }
+    next = next === current.config ? structuredClone(next) : configSchema.parse(next);
     if (input.models !== undefined) {
       for (const handle of input.models.oauthCredentialHandles ?? []) {
         const staged = this.requireStagedCredential(handle);

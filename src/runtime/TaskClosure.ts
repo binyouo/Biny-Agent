@@ -35,6 +35,7 @@ export interface TaskClosureResult {
 }
 
 const workerAttemptSchema = z.object({
+  workspaceSnapshotVersion: z.literal(2).optional(),
   prompt: z.string().min(1), beforeWorkspace: z.record(z.string(), z.string()).optional(),
   definitionFingerprint: z.string().optional(), accessMode: z.enum(["read-only", "workspace"]).optional(), agent: z.string().optional(),
   communication: z.boolean().optional(), workspaceRoot: z.string().optional()
@@ -132,6 +133,10 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
     && latestAttempt.verification.status === "failed"
     ? latestAttempt.verification
     : undefined;
+  if (persistedRepairEvidence && latestAttempt && readCandidateArtifacts(latestAttempt.artifacts)?.repairScope.version !== 2) {
+    return blockUnsafeRecovery(input.taskRuns, input.taskRunId, latestAttempt.attemptId,
+      "Legacy queued repair has no directory-aware repair scope evidence. Create a new task to establish a new workspace baseline; this repair will not be automatically re-executed.");
+  }
   let repairEvidence: TaskVerificationEvidence | undefined = persistedRepairEvidence;
   let definitionFingerprint = persistedDefinitionFingerprint(initial.attempts);
 
@@ -201,6 +206,10 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
       if (!contract) {
         return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId, "A verifying TaskRun has no verification contract.");
       }
+      if (candidateArtifacts.repairScope.version !== 2) {
+        return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId,
+          "Legacy candidate has no directory-aware repair scope evidence. Create a new task to establish a new workspace baseline; this candidate will not be automatically re-executed.");
+      }
       if (await canReuseTaskVerification({
         evidence: attempt.verification,
         contract,
@@ -228,6 +237,11 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
       if (workerAttempt && (!workerCheckpoint || (contract && (!workerCheckpoint.beforeWorkspace || !workerCheckpoint.definitionFingerprint)))) {
         return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId, "Missing original Worker execution or verification baseline.");
       }
+      if (workerAttempt && contract && (workerCheckpoint?.workspaceSnapshotVersion !== 2
+        || !workerCheckpoint.beforeWorkspace?.["."]?.startsWith("directory\0"))) {
+        return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId,
+          "Legacy Worker checkpoint has no directory-aware workspace baseline. Create a new task to establish a new workspace baseline; this Worker will not be automatically re-executed.");
+      }
       if (workerAttempt && contract && workerCheckpoint?.definitionFingerprint !== await fingerprintTaskVerificationDefinitions(input.workspaceRoot, contract, input.ignore, input.signal)) {
         return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId, "Verification definition inputs changed; Worker continuation cannot change the original acceptance standard.");
       }
@@ -246,7 +260,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
         : repairPrompt(basePrompt, contract!, repairEvidence, current.attempts.length));
       input.taskRuns.transition(input.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: {
         ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>,
-        workerExecution: workerCheckpoint ?? { prompt, beforeWorkspace, definitionFingerprint, workspaceRoot: input.workspaceRoot }
+        workerExecution: workerCheckpoint ?? { prompt, beforeWorkspace, workspaceSnapshotVersion: contract ? 2 : undefined, definitionFingerprint, workspaceRoot: input.workspaceRoot }
       } });
       workerAttempt = undefined;
       input.signal?.throwIfAborted();
@@ -414,6 +428,9 @@ function verificationApprovalState(task: TaskRunWithAttempts, approvalId: string
   if (!contract || !existingArtifacts || !isTaskVerificationEvidence(attempt.verification)) {
     throw new Error("TaskRun approval requires persisted verification contract, candidate metadata, and evidence.");
   }
+  if (existingArtifacts.repairScope.version !== 2) {
+    throw new Error("Legacy candidate has no directory-aware repair scope evidence. Create a new task to establish a new workspace baseline.");
+  }
   const pending = pendingTaskVerificationApproval(attempt.verification);
   if (!pending || pending.taskRunId !== task.taskRunId || pending.attemptId !== attempt.attemptId) {
     throw new Error("TaskRun has no current verification permission request to approve.");
@@ -501,6 +518,7 @@ function readCandidateArtifacts(artifacts: unknown): TaskCandidateArtifacts | un
     communication: record.communication,
     definitionFingerprint: record.definitionFingerprint,
     repairScope: {
+      version: repairScope.version === 2 ? 2 : undefined,
       enforcement: "post_execution_change_guard",
       changedPaths: repairScope.changedPaths,
       violationPaths: repairScope.violationPaths

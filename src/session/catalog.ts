@@ -17,7 +17,7 @@ import {
   type ChatPersonalizationOverride
 } from "../personalization/index.js";
 import { listSessionSummaries, readSessionSummary, type SessionSummary } from "./events.js";
-import { ensureAgentDirs, listSessionFiles } from "./store.js";
+import { ensureAgentDirs } from "./store.js";
 
 const catalogVersion = 1 as const;
 const defaultPageSize = 32;
@@ -298,40 +298,6 @@ export async function listSessionCatalog(workspaceRoot: string): Promise<Session
   return items
     .map((item) => ({ ...item, hasChildren: (parentCounts.get(item.id) ?? 0) > 0 }))
     .sort(compareCatalogItems);
-}
-
-export async function getSessionCatalogItem(
-  workspaceRoot: string,
-  sessionId: string
-): Promise<SessionCatalogItem | undefined> {
-  assertSessionId(sessionId);
-  const files = new Set(await listSessionFiles(workspaceRoot));
-  if (!files.has(`${sessionId}.jsonl`)) return undefined;
-  const summary = await readSessionSummary(workspaceRoot, `${sessionId}.jsonl`).catch(() => undefined);
-  if (!summary) return undefined;
-  const directory = await readCatalogDirectory(workspaceRoot);
-  const record = directory === undefined ? undefined : await readCatalogFile(catalogFilePath(directory, sessionId)).catch(() => undefined);
-  const item = toCatalogItem(summary, record);
-  if (directory !== undefined) {
-    // hasChildren 只需验证声明了该父节点的会话；无关 JSONL 不参与单条读取。
-    const entries = await fs.readdir(directory);
-    for (const entry of entries) {
-      if (!entry.endsWith(".json")) continue;
-      const id = entry.slice(0, -5);
-      if (!files.has(`${id}.jsonl`)) continue;
-      const child = await readCatalogFile(catalogFilePath(directory, id)).catch(() => undefined);
-      if (child?.parentSessionId !== sessionId) continue;
-      if (await readSessionSummary(workspaceRoot, `${id}.jsonl`).catch(() => undefined)) {
-        item.hasChildren = true;
-        break;
-      }
-    }
-  }
-  return item;
-}
-
-export async function readSessionTree(workspaceRoot: string): Promise<SessionTreeNode[]> {
-  return buildSessionTree(await listSessionCatalog(workspaceRoot));
 }
 
 /**

@@ -1,3 +1,5 @@
+import { deferredArguments } from "./deferredToolSearch.js";
+import { declaredTools, supportsNativeToolSearch } from "./nativeToolSearch.js";
 /**
  * 用 Vercel AI SDK 的 streamText 执行 Biny 的单个模型步骤。
  *
@@ -28,6 +30,7 @@ import type {
   AgentLoopTurnContext,
   AgentMessage,
   AgentTool,
+  AgentToolCallContent,
   AgentToolResult,
   AgentToolResultMessage,
   ModelStreamOptions
@@ -73,7 +76,7 @@ export interface VercelLoopState {
   sequentialToolTail: Promise<void>;
   currentText: string;
   currentReasoning: Map<string, { text: string; providerMetadata?: Record<string, unknown> }>;
-  currentToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown>; providerMetadata?: Record<string, unknown> }>;
+  currentToolCalls: AgentToolCallContent[];
   widgetInputs: Map<string, { text: string; publishedAt: number }>;
   directCall: DirectCallDiagnostics | undefined;
   directAttempts: Array<{ startedAtMs: number; durationMs?: number; error?: string }>;
@@ -294,14 +297,27 @@ function streamModelStep(state: VercelLoopState) {
     model: state.vercelModel!,
     middleware: {
       specificationVersion: "v4",
+      transformParams: async ({ params }) => {
+        if (!supportsNativeToolSearch(state.model) || !state.config.resolveToolSearchTools) return params;
+        const visible = new Set(declaredTools(state.tools, state.context.messages, true).map(tool => tool.name));
+        return { ...params, tools: params.tools?.filter(tool => visible.has(tool.name)) };
+      },
       wrapStream: async ({ doStream }) => {
         const attempt: VercelLoopState["directAttempts"][number] = { startedAtMs: Date.now() };
         state.directAttempts.push(attempt);
         try {
           const result = await doStream();
           let terminal = false;
+          const toolCallIds = new Set<string>();
           return { ...result, stream: result.stream.pipeThrough(new TransformStream({
             transform(part, controller) {
+              // SDK 在模型步骤完成后派发工具；在流边界拒绝重复身份，阻止整批副作用。
+              if (part.type === "tool-call") {
+                if (toolCallIds.has(part.toolCallId)) {
+                  throw new Error(`Duplicate tool call id received from the model: ${part.toolCallId}. The turn was stopped before tool execution.`);
+                }
+                toolCallIds.add(part.toolCallId);
+              }
               if (part.type === "finish" || part.type === "error") terminal = true;
               controller.enqueue(part);
             },
@@ -383,13 +399,12 @@ function retryableEmptySuccessfulResponse(error: unknown): unknown {
 }
 
 function completeStep(state: VercelLoopState, step: StepResult<ToolSet>): VercelStepRecord {
-  const message = assistantFromStep(step);
-  const toolResults = step.toolCalls.map((call) => toolResultMessage(
-    call.toolCallId,
-    call.toolName,
-    state.toolResults.get(call.toolCallId),
-    step
-  ));
+  const message = assistantFromStep(step, state);
+  const toolResults = step.toolCalls.map(call => {
+    const input = isRecord(call.input) ? call.input : {};
+    const domain = domainToolCall(state, call.toolCallId, call.toolName, input);
+    return toolResultMessage(call.toolCallId, domain.name, state.toolResults.get(call.toolCallId), step, domain.viaToolCall);
+  });
   const messages = [...state.context.messages, message, ...toolResults];
   state.context.messages.push(message, ...toolResults);
   state.newMessages.push(message, ...toolResults);
@@ -579,13 +594,12 @@ function handleVercelStreamPart(state: VercelLoopState, part: {
     state.outputProducedSinceStep = true;
     const input = isRecord(part.input) ? part.input : {};
     const metadata = isRecord(part.input) ? providerMetadata(part.providerMetadata) : undefined;
-    const call = { id: part.toolCallId, name: part.toolName, arguments: input,
-      ...(metadata === undefined ? {} : { providerMetadata: metadata }) };
+    const call = domainToolCall(state, part.toolCallId, part.toolName, input, metadata);
     state.currentToolCalls.push(call);
     return [{
       type: "message_update",
       message: assistantSnapshot(state),
-      event: { type: "tool-call", id: part.toolCallId, name: part.toolName, arguments: input }
+      event: { type: "tool-call", id: call.id, name: call.name, arguments: call.arguments }
     }];
   }
   if (part.type === "finish-step") {
@@ -640,7 +654,21 @@ function attachStreamedReasoningMetadata(
   return changed ? { ...message, content } : message;
 }
 
-function assistantFromStep(step: StepResult<ToolSet>): AgentAssistantMessage {
+function domainToolCall(state: VercelLoopState, id: string, name: string, input: Record<string, unknown>, metadata?: Record<string, unknown>): AgentToolCallContent {
+  if (name === "ToolCall" && typeof input.name === "string"
+    && state.tools.some(tool => tool.deferredTarget)) {
+    const args = deferredArguments(input, state.model.wireProtocol === "gemini");
+    if (args) {
+      const raw = input.argumentsJson;
+      return { type: "toolCall", id, name: input.name, arguments: args, viaToolCall: true,
+        geminiArgumentsJson: state.model.wireProtocol === "gemini" && typeof raw === "string" && raw !== JSON.stringify(args) ? raw : undefined,
+        ...(metadata === undefined ? {} : { providerMetadata: metadata }) };
+    }
+  }
+  return { type: "toolCall", id, name, arguments: name === "ToolSearch" && isRecord(input.arguments) ? input.arguments : input, ...(metadata === undefined ? {} : { providerMetadata: metadata }) };
+}
+
+function assistantFromStep(step: StepResult<ToolSet>, state: VercelLoopState): AgentAssistantMessage {
   const content: AgentAssistantMessage["content"] = [];
   // SDK content retains block-start order and assembles deltas by stream ID.
   // Rebuilding from text/reasoning/toolCalls groups would reorder signed thinking
@@ -656,14 +684,7 @@ function assistantFromStep(step: StepResult<ToolSet>): AgentAssistantMessage {
       });
     } else if (part.type === "tool-call") {
       const metadata = isRecord(part.input) ? providerMetadata(part.providerMetadata) : undefined;
-      content.push({
-        type: "toolCall",
-        id: part.toolCallId,
-        name: part.toolName,
-        arguments: isRecord(part.input) ? part.input : {},
-        invalid: part.invalid,
-        ...(metadata === undefined ? {} : { providerMetadata: metadata })
-      });
+      content.push({ ...domainToolCall(state, part.toolCallId, part.toolName, isRecord(part.input) ? part.input : {}, metadata), invalid: part.invalid });
     }
   }
   return {
@@ -682,13 +703,7 @@ export function assistantSnapshot(state: VercelLoopState): AgentAssistantMessage
     if (reasoning.text) content.push({ type: "reasoning", text: reasoning.text, providerMetadata: reasoning.providerMetadata });
     else content.push({ type: "reasoning", text: "", providerMetadata: reasoning.providerMetadata });
   }
-  content.push(...state.currentToolCalls.map((call) => ({
-    type: "toolCall" as const,
-    id: call.id,
-    name: call.name,
-    arguments: call.arguments,
-    ...(call.providerMetadata === undefined ? {} : { providerMetadata: call.providerMetadata })
-  })));
+  content.push(...state.currentToolCalls);
   return {
     role: "assistant",
     content,
@@ -704,13 +719,15 @@ function toolResultMessage(
   toolCallId: string,
   toolName: string,
   result: AgentToolResult | undefined,
-  step: StepResult<ToolSet>
+  step: StepResult<ToolSet>,
+  viaToolCall?: true
 ): AgentToolResultMessage {
   if (result) {
     return {
       role: "toolResult",
       toolCallId,
       toolName,
+      viaToolCall,
       content: result.content,
       details: result.details,
       isError: result.isError,
@@ -730,6 +747,7 @@ function toolResultMessage(
     role: "toolResult",
     toolCallId,
     toolName,
+    viaToolCall,
     content: [{ type: "text", text: stringify(output ?? "Tool execution returned no result.") }],
     isError: true,
     timestamp: Date.now()

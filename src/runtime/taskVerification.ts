@@ -98,6 +98,7 @@ export interface TaskCheckEvidence {
 }
 
 export interface TaskRepairScopeEvidence {
+  version?: 2;
   enforcement: "post_execution_change_guard";
   changedPaths: string[];
   violationPaths: string[];
@@ -238,7 +239,9 @@ export async function captureTaskWorkspaceSnapshot(
 ): Promise<TaskWorkspaceSnapshot> {
   signal?.throwIfAborted();
   const snapshot: Record<string, string> = {};
-  await snapshotWorkspacePath(snapshot, workspaceRoot, workspaceRoot, ignore, signal);
+  const canonicalRoot = await realpath(workspaceRoot);
+  signal?.throwIfAborted();
+  await snapshotWorkspacePath(snapshot, canonicalRoot, canonicalRoot, ignore, signal);
   signal?.throwIfAborted();
   return Object.freeze(snapshot);
 }
@@ -253,9 +256,15 @@ export function compareTaskWorkspaceSnapshots(
     .sort();
   const normalizedAllowed = allowedRepairPaths.map(normalizeRelativePath);
   return {
+    version: 2,
     enforcement: "post_execution_change_guard",
     changedPaths,
-    violationPaths: changedPaths.filter((relative) => !normalizedAllowed.some((allowed) => pathContains(allowed, relative)))
+    violationPaths: changedPaths.filter((relative) => !normalizedAllowed.some((allowed) =>
+      pathContains(allowed, relative)
+      // Creating an allowed file may require new parent directories. Existing
+      // directory permissions are not implied by permission to edit a child.
+      || (before[relative] === undefined && after[relative]?.startsWith("directory\0")
+        && relative !== "." && pathContains(relative, allowed))))
   };
 }
 
@@ -840,6 +849,7 @@ async function snapshotWorkspacePath(
     throw error;
   }
   if (metadata.isDirectory()) {
+    snapshot[normalizeRelativePath(relative)] = `directory\0${String(metadata.mode & 0o7777)}`;
     const entries = await readdir(absolute, { withFileTypes: true });
     signal?.throwIfAborted();
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {

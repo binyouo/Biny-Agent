@@ -50,12 +50,10 @@ export class SoulStorage {
   }
 
   async initialize(): Promise<void> {
-    await this.migrateIfDefault();
     await this.ensureRoot();
   }
 
   async read(): Promise<SoulSnapshot> {
-    await this.migrateIfDefault();
     const userContent = normalizeSoulContent(await readOptional(this.filePath));
     return {
       content: userContent,
@@ -71,7 +69,6 @@ export class SoulStorage {
   }
 
   async set(content: string): Promise<SoulSnapshot> {
-    await this.migrateIfDefault();
     const normalized = validateSoulContent(content);
     return await this.withLock(async () => {
       await this.writeFile(this.filePath, normalized + "\n");
@@ -81,7 +78,6 @@ export class SoulStorage {
 
   /** 为外部编辑器准备用户覆盖文件；默认人格不复制进用户文件。 */
   async ensureEditable(): Promise<SoulSnapshot> {
-    await this.migrateIfDefault();
     return await this.withLock(async () => {
       const current = normalizeSoulContent(await readOptional(this.filePath));
       if (!current) await this.writeFile(this.filePath, "# Soul\n\n");
@@ -90,7 +86,6 @@ export class SoulStorage {
   }
 
   async reset(): Promise<SoulSnapshot> {
-    await this.migrateIfDefault();
     return await this.withLock(async () => {
       await fs.unlink(this.filePath).catch((error: unknown) => {
         if (!isNotFound(error)) throw error;
@@ -100,7 +95,6 @@ export class SoulStorage {
   }
 
   async appendTrait(description: string): Promise<SoulSnapshot> {
-    await this.migrateIfDefault();
     return await this.withLock(async () => {
       const current = normalizeSoulContent(await readOptional(this.filePath));
       const next = appendTrait(current, description, this.now());
@@ -112,9 +106,6 @@ export class SoulStorage {
   private async ensureRoot(): Promise<void> {
     await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
     await fs.chmod(this.root, 0o700);
-  }
-
-  private async migrateIfDefault(): Promise<void> {
   }
 
   private async withLock<T>(work: () => Promise<T>): Promise<T> {

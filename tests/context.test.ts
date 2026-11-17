@@ -19,7 +19,7 @@ import type { SemanticMemoryRetriever } from "../src/agent/context/SemanticMemor
 import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
 import { cloneAgentMessages, messageReasoning, messageText } from "../src/agent/modelMessages.js";
-import { buildSystemPrompt, refreshRuntimeSystemPrompt, stableSystemPromptForCache, stripTransientTurnContext } from "../src/agent/prompts.js";
+import { runtimeToolContext, buildSystemPrompt, refreshRuntimeSystemPrompt, stableSystemPromptForCache, stripTransientTurnContext } from "../src/agent/prompts.js";
 import { BINY_AGENT_DIR_ENV, globalAgentDir, projectSessionsDir, projectStateDirName } from "../src/config/paths.js";
 import type { AgentConfig } from "../src/config/schema.js";
 import { defaultConfig } from "../src/config/schema.js";
@@ -30,15 +30,15 @@ import { maxSessionEventLineBytes, maxSessionEvents, maxSessionFileBytes } from 
 import { replaySession, sessionEventsToConversation } from "../src/session/replay.js";
 import {
   deleteSessionFile,
-  duplicateSessionFile,
+  createSessionFile,
   agentDir,
   ensureAgentDirs,
   listSessionFiles,
-  readSessionSnapshot,
   resolveSessionFile,
   sessionFilePath
 } from "../src/session/store.js";
-import { listSessionSummaries, parseSessionEvents, readSessionEvents, readStoredSessionEvents, repairSessionTailForAppend } from "../src/session/events.js";
+import { forkSession } from "../src/session/fork.js";
+import { listSessionSummaries, parseSessionEvents, readSessionEvents, readStoredSessionEvents } from "../src/session/events.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { createCheckpointEvidenceTool } from "../src/extensions/checkpointEvidence.js";
 import { checkpointClaims } from "../src/session/checkpointClaims.js";
@@ -58,7 +58,7 @@ class ContextTestModel {
   evidenceClaimId?: string;
   failCompaction = false;
   reportUsage = true;
-  summarySource = "m0";
+  summarySource?: string;
   readonly requests: AgentMessage[][] = [];
   readonly systemPrompts: Array<string | undefined> = [];
   memoryExtractionCalls = 0;
@@ -105,7 +105,7 @@ class ContextTestModel {
         "",
         "## Critical Context",
         "- Tests passed."
-      ].join("\n"), this.summarySource);
+      ].join("\n"), this.summarySource ?? prompt.match(/\[source (m\d+) kind=message role=user\]/u)?.[1] ?? "m0");
     }
     return "ok";
   }
@@ -203,8 +203,8 @@ function testConversationBoundaryPrompt(): void {
   assert.match(prompt, /Keep simple answers simple; do not add headings or lists to simple answers/u);
   assert.match(prompt, /simple greeting or casual exchange/u);
   assert.match(prompt, /casual chat gets a short direct reply and no workspace work/u);
-  assert.match(prompt, /Available tools:\n\(none\)/u);
-  assert.match(prompt, /only the latest user message as the active task/u);
+  assert.match(prompt, /Available tools are defined by the supplied tool schemas/u);
+  assert.match(prompt, /latest actual user request as the active task/u);
   assert.match(prompt, /smallest sequence that reaches the outcome/u);
   assert.match(prompt, /Before the first tool call for a task, output a brief, natural acknowledgment/u);
   assert.match(prompt, /Do not wait for the user to ask about progress/u);
@@ -226,37 +226,30 @@ function testConversationBoundaryPrompt(): void {
     promptSnippet: "Search the public web",
     promptGuidelines: ["Use WebSearch for current public information"]
   };
-  assert.match(buildSystemPrompt({ cwd: "/workspace", tools: [webTool] }), /Use WebSearch for current public information/u);
+  assert.doesNotMatch(prompt, /Use WebSearch for current public information/u);
+  assert.match(runtimeToolContext([webTool]), /Use WebSearch for current public information/u);
   const zvecTool = {
     name: "mcp_zvec_grep_zvec_grep_search",
     promptSnippet: "Search indexed workspace content by meaning",
     promptGuidelines: ["Use zvec_grep_search for semantic workspace discovery"]
   };
-  const zvecPrompt = buildSystemPrompt({ cwd: "/workspace", tools: [zvecTool] });
+  const zvecPrompt = runtimeToolContext([zvecTool]);
   assert.match(zvecPrompt, /Search indexed workspace content by meaning/u);
   assert.match(zvecPrompt, /Use zvec_grep_search for semantic workspace discovery/u);
-  assert.doesNotMatch(
-    buildSystemPrompt({ cwd: "/workspace", tools: [{ name: "custom_tool" }] }),
-    /- custom_tool:/u
-  );
   const refreshed = refreshRuntimeSystemPrompt(buildSystemPrompt({
     cwd: "/workspace",
     extensionPrompt: "static capability",
-    tools: [webTool]
-  }), [{
-    name: "Bash",
-    promptSnippet: "Run a finite command",
-    promptGuidelines: ["Use Bash only for finite commands"]
-  }]);
+  }));
   assert.match(refreshed, /static capability/u);
-  assert.match(refreshed, /Use Bash/u);
+  assert.doesNotMatch(refreshed, /Use WebSearch/u);
+  assert.match(runtimeToolContext([{ name: "Bash", promptGuidelines: ["Use Bash only for finite commands"] }]), /Use Bash/u);
 }
 
 async function testPromptEpochAndCanonicalPrefix(): Promise<void> {
   const toolA = { name: "alpha", description: "Alpha", parameters: { type: "object" as const }, execute: async () => ({ content: [] }) };
   const toolB = { name: "beta", description: "Beta", parameters: { type: "object" as const }, execute: async () => ({ content: [] }) };
-  const first = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "project-a", tools: [toolB, toolA] });
-  const second = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "project-b", tools: [toolA, toolB] });
+  const first = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "project-a" });
+  const second = buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "project-b" });
   assert.notEqual(stableSystemPromptForCache(first), stableSystemPromptForCache(second));
 
   await withTempWorkspace(async (workspaceRoot) => {
@@ -1000,7 +993,7 @@ async function testCheckpointIsResumeTruthSource(): Promise<void> {
     assert.equal(failedReplay.contextState?.compactionFailure?.kind, "provider_error", "失败后必须先落盘冷却信息");
     assert.equal(failedReplay.messages.length, 2, "失败不能推进压缩边界");
     firstProvider.failCompaction = false;
-    assert.match(await firstAgent.compactConversation(), /Compacted 2 messages/u);
+    assert.match(await firstAgent.compactConversation(), /Compacted 5 messages/u, "workspace, date and tool guidance count toward the compacted context");
     await firstAgent.close();
 
     const compactedReplay = await replaySession(firstRecorder.filePath);
@@ -1122,7 +1115,7 @@ async function testCheckpointPersistenceFailureStopsSession(): Promise<void> {
       config.context.memory.generateMemories = false;
       const recorder = new FaultRecorder(workspaceRoot, `fault-${phase}-${mode}`);
       config.context.maxInputTokens = 8_000;
-      config.context.compaction.keepRecentTokens = 1000; // 手动场景让整段含心境的短历史进入 checkpoint。
+      config.context.compaction.keepRecentTokens = mode === "manual" ? 20_000 : 1_000; // 手动场景整体压缩，完整请求前缀也纳入材料。
       const provider = new ContextTestModel();
       // 自动压缩场景不能回报虚构的零 input usage，否则有效锚点会正确抑制估算触发。
       provider.reportUsage = mode !== "automatic";
@@ -1180,8 +1173,8 @@ async function testTruncatedSessionTailAndDanglingToolRecovery(): Promise<void> 
     assert.equal(replay.recoveredToolResults[0]?.toolCallId, "dangling-1");
     assert.equal(replay.messages.some((message) => message.role === "toolResult"), true);
 
-    await repairSessionTailForAppend(filePath);
     const recorder = new SessionRecorder(workspaceRoot, "interrupted-session");
+    recorder.repairTailForAppend();
     for (const event of replay.recoveredToolResults) recorder.record(event);
     await recorder.close();
     const repaired = await readSessionEvents(filePath);
@@ -1501,11 +1494,11 @@ async function testSessionPathBoundaries(): Promise<void> {
     assert.equal(await resolveSessionFile(workspaceRoot, "2026-07-18-safe.jsonl"), canonicalSafeFile);
     await assert.rejects(resolveSessionFile(workspaceRoot, ".biny/sessions/2026-07-18-safe.jsonl"), /Invalid session reference/u);
     assert.equal(await resolveSessionFile(workspaceRoot, "latest"), canonicalSafeFile);
-    assert.match((await readSessionSnapshot(workspaceRoot, "2026-07-18-safe")).bytes.toString("utf8"), /safe session/);
+    assert.match(JSON.stringify((await readStoredSessionEvents(workspaceRoot, "2026-07-18-safe")).events), /safe session/);
     assert.equal((await readStoredSessionEvents(workspaceRoot, "2026-07-18-safe")).events[0]?.type, "user_message");
-    const duplicatePath = await duplicateSessionFile(workspaceRoot, "2026-07-18-safe", "safe-copy");
+    const { filePath: duplicatePath, sessionId: duplicateId } = await forkSession(workspaceRoot, "2026-07-18-safe");
     assert.equal(await fs.readFile(duplicatePath, "utf8"), await fs.readFile(safeFile, "utf8"));
-    await deleteSessionFile(workspaceRoot, "safe-copy");
+    await deleteSessionFile(workspaceRoot, duplicateId);
     await assert.rejects(fs.access(duplicatePath));
     const deleteTombstones = (await fs.readdir(path.dirname(duplicatePath)))
       .filter((fileName) => fileName.startsWith(".session-delete-") && fileName.endsWith(".delete"));
@@ -1533,23 +1526,22 @@ async function testSessionPathBoundaries(): Promise<void> {
       await fs.writeFile(outsideFile, outsideContent, "utf8");
       await fs.symlink(outsideFile, path.join(sessionsDir, "linked.jsonl"));
       await assert.rejects(resolveSessionFile(workspaceRoot, "linked"), /regular \.jsonl file/);
-      await assert.rejects(readSessionSnapshot(workspaceRoot, "linked"), /regular \.jsonl file/);
-      await assert.rejects(duplicateSessionFile(workspaceRoot, "linked", "linked-copy"), /regular \.jsonl file/);
+      await assert.rejects(readStoredSessionEvents(workspaceRoot, "linked"), /regular \.jsonl file/);
+      await assert.rejects(forkSession(workspaceRoot, "linked"), /regular \.jsonl file/);
       await assert.rejects(deleteSessionFile(workspaceRoot, "linked"), /regular \.jsonl file/);
 
       const hardlinkedFile = path.join(sessionsDir, "hardlinked.jsonl");
       await fs.link(outsideFile, hardlinkedFile);
       await assert.rejects(resolveSessionFile(workspaceRoot, "hardlinked"), /single-link regular \.jsonl file/);
-      await assert.rejects(readSessionSnapshot(workspaceRoot, "hardlinked"), /single-link regular \.jsonl file/);
-      await assert.rejects(duplicateSessionFile(workspaceRoot, "2026-07-18-safe", "hardlinked"), /EEXIST/);
+      await assert.rejects(readStoredSessionEvents(workspaceRoot, "hardlinked"), /single-link regular \.jsonl file/);
+      await assert.rejects(createSessionFile(workspaceRoot, "hardlinked", Buffer.from("must not overwrite")), /EEXIST/);
       await assert.rejects(deleteSessionFile(workspaceRoot, "hardlinked"), /single-link regular \.jsonl file/);
-      await assert.rejects(repairSessionTailForAppend(hardlinkedFile), /single-link regular \.jsonl file/);
       assert.throws(() => new SessionRecorder(workspaceRoot, "hardlinked"), /single-link regular \.jsonl file/);
       assert.equal(await fs.readFile(outsideFile, "utf8"), outsideContent);
 
       const workspaceAlias = path.join(outsideRoot, "workspace-alias");
       await fs.symlink(workspaceRoot, workspaceAlias);
-      assert.match((await readSessionSnapshot(workspaceAlias, "2026-07-18-safe")).bytes.toString("utf8"), /safe session/);
+      assert.match(JSON.stringify((await readStoredSessionEvents(workspaceAlias, "2026-07-18-safe")).events), /safe session/);
 
       const pinnedRecorder = new SessionRecorder(workspaceRoot, "pinned-before-parent-swap");
       const originalSessionsRoot = `${sessionsRoot}-original`;
@@ -1585,8 +1577,8 @@ async function testSessionPathBoundaries(): Promise<void> {
       await removeTestRoot(outsideSessionsDir, { recursive: true, force: true });
       await fs.symlink(outsideRoot, outsideSessionsDir);
       await assert.rejects(resolveSessionFile(workspaceRoot, "outside"), /real directory, not a symbolic link/);
-      await assert.rejects(readSessionSnapshot(workspaceRoot, "outside"), /real directory, not a symbolic link/);
-      await assert.rejects(duplicateSessionFile(workspaceRoot, "outside", "must-not-copy"), /real directory, not a symbolic link/);
+      await assert.rejects(readStoredSessionEvents(workspaceRoot, "outside"), /real directory, not a symbolic link/);
+      await assert.rejects(forkSession(workspaceRoot, "outside"), /real directory, not a symbolic link/);
       await assert.rejects(deleteSessionFile(workspaceRoot, "outside"), /real directory, not a symbolic link/);
       await assert.rejects(ensureAgentDirs(workspaceRoot), /real directory, not a symbolic link/);
       assert.throws(() => new SessionRecorder(workspaceRoot, "must-not-escape"), /real directory, not a symbolic link/);
@@ -1617,8 +1609,8 @@ async function testGlobalSessionsStayProjectScoped(): Promise<void> {
         fs.writeFile(firstPath, `${JSON.stringify({ type: "user_message", content: "first project" })}\n`, "utf8"),
         fs.writeFile(secondPath, `${JSON.stringify({ type: "user_message", content: "second project" })}\n`, "utf8")
       ]);
-      assert.match((await readSessionSnapshot(workspaceRoot, "latest")).bytes.toString("utf8"), /first project/u);
-      assert.match((await readSessionSnapshot(otherWorkspace, "latest")).bytes.toString("utf8"), /second project/u);
+      assert.match(JSON.stringify((await readStoredSessionEvents(workspaceRoot, "latest")).events), /first project/u);
+      assert.match(JSON.stringify((await readStoredSessionEvents(otherWorkspace, "latest")).events), /second project/u);
     } finally {
       await rm(otherWorkspace, { recursive: true, force: true });
     }
@@ -1636,11 +1628,10 @@ async function testSessionReadLimits(): Promise<void> {
 
     // 校验与写入路径保持严格：这些地方发现超限就该停下。
     await assert.rejects(readSessionEvents(oversizedFile), /maximum size/u);
-    await assert.rejects(repairSessionTailForAppend(oversizedFile), /maximum size/u);
-    // 原始快照供文件复制使用，不能把残缺尾部当成完整源文件。
-    await assert.rejects(readSessionSnapshot(workspaceRoot, "oversized-session"), /maximum size/u);
-    await assert.rejects(duplicateSessionFile(workspaceRoot, "oversized-session", "oversized-copy"), /maximum size/u);
+    await assert.rejects(readStoredSessionEvents(workspaceRoot, "oversized-session"), /maximum size/u);
+    await assert.rejects(forkSession(workspaceRoot, "oversized-session"), /maximum size/u);
     const oversizedRecorder = new SessionRecorder(workspaceRoot, "oversized-session");
+    assert.throws(() => oversizedRecorder.repairTailForAppend(), /maximum size/u);
     assert.throws(() => oversizedRecorder.readText(), /maximum size/u);
     await oversizedRecorder.close();
 

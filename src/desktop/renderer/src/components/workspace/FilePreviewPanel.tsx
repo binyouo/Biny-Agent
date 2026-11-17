@@ -5,7 +5,7 @@
  * data URL 内联显示；音视频读取本地流地址，其他二进制/超限给「使用系统应用打开」兜底。文件树支持懒加载展开
  * 和名称过滤。这里只做展示与本地交互，数据请求全部由 useWorkspaceInspector 的回调注入。
  */
-import { memo, useDeferredValue, useState } from "react";
+import { memo, useDeferredValue, useLayoutEffect, useRef, useState } from "react";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import type {
   DesktopWorkspaceDirectoryEntry,
@@ -68,28 +68,43 @@ export const FilePreviewPanel = memo(function FilePreviewPanel({ width, preview,
   const [resizing, setResizing] = useState(false);
   const browserOnly = !preview && narrow;
   const treeVisible = !preview || (fileTreeOpen && !narrow);
+  const resizeCleanup = useRef<(() => void) | undefined>(undefined);
+  useLayoutEffect(() => () => { resizeCleanup.current?.(); }, [projectId, treeVisible, browserOnly, width]);
   // 按目标宽度布局，开合中的裁切宽度不回写用户的文件树宽度。
   const startTreeResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     event.preventDefault();
     event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeCleanup.current?.();
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    target.setPointerCapture(pointerId);
     setResizing(true);
     const startX = event.clientX;
     const startWidth = treeWidth;
     // 上限用拖拽起点的面板宽算一次；拖树期间面板宽不变，每帧重算反而白费。
     const maxWidth = Math.min(MAX_TREE_WIDTH, Math.max(MIN_TREE_WIDTH, width - MIN_PREVIEW_WIDTH));
+    let retired = false;
     const move = (moveEvent: PointerEvent): void => {
+      if (retired || moveEvent.pointerId !== pointerId) return;
       setTreeWidth(Math.min(maxWidth, Math.max(MIN_TREE_WIDTH, startWidth + moveEvent.clientX - startX)));
     };
     const stop = (): void => {
+      if (retired) return;
+      retired = true;
+      if (resizeCleanup.current === stop) resizeCleanup.current = undefined;
       setResizing(false);
       window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      target.removeEventListener("lostpointercapture", finish);
+      if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
     };
+    const finish = (event: PointerEvent): void => { if (event.pointerId === pointerId) stop(); };
+    resizeCleanup.current = stop;
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
-    window.addEventListener("pointercancel", stop, { once: true });
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    target.addEventListener("lostpointercapture", finish);
   };
   return (
     <aside aria-label={preview ? "文件预览" : "文件浏览器"} className="file-preview-panel file-browser-panel">
@@ -278,22 +293,38 @@ const FileTree = memo(function FileTree({ path, query, directoryStates, expanded
         const isExpanded = isDirectory && expandedDirectories.has(entry.path);
         return (
           <div key={entry.path}>
-            <button role="treeitem" aria-expanded={isDirectory ? isExpanded : undefined} aria-selected={selectedPath === entry.path} className={`file-tree-row${isDirectory ? " is-directory" : ""}${selectedPath === entry.path ? " is-selected" : ""}`} onClick={() => isDirectory ? onToggleDirectory(entry.path) : onPreviewFile(entry.path)} onKeyDown={(event) => {
-              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                const rows = Array.from(event.currentTarget.closest('[role="tree"]')?.querySelectorAll<HTMLButtonElement>('[role="treeitem"]') ?? []);
-                const next = rows[rows.indexOf(event.currentTarget) + (event.key === "ArrowDown" ? 1 : -1)];
-                event.preventDefault(); next?.focus();
-              } else if (isDirectory && ((event.key === "ArrowRight" && !isExpanded) || (event.key === "ArrowLeft" && isExpanded))) { event.preventDefault(); onToggleDirectory(entry.path); }
-            }} style={{ paddingLeft: `${8 + depth * 16}px` }} type="button">
-              {isDirectory ? <span className={`file-tree-disclosure${isExpanded ? " is-expanded" : ""}`}><Icon name="chevron" size={13} /></span> : <span aria-hidden="true" className="file-tree-disclosure is-file-slot" />}
-              {isDirectory ? <Icon className="file-tree-folder-icon" name="folder" size={14} /> : <FileTypeMarker name={entry.name} />}
-              <span>{entry.name}</span>
-            </button>
+            <FileTreeRow path={entry.path} name={entry.name} isDirectory={isDirectory} isExpanded={isExpanded} isSelected={selectedPath === entry.path} depth={depth} onToggleDirectory={onToggleDirectory} onPreviewFile={onPreviewFile} />
             {isDirectory && isExpanded ? <FileTree directoryStates={directoryStates} depth={depth + 1} expandedDirectories={expandedDirectories} onPreviewFile={onPreviewFile} onToggleDirectory={onToggleDirectory} path={entry.path} query={query} selectedPath={selectedPath} showHidden={showHidden} /> : null}
           </div>
         );
       })}
     </div>
+  );
+});
+
+// Primitive display props preserve updates even when callers mutate entry objects.
+const FileTreeRow = memo(function FileTreeRow({ path, name, isDirectory, isExpanded, isSelected, depth, onToggleDirectory, onPreviewFile }: {
+  path: string;
+  name: string;
+  isDirectory: boolean;
+  isExpanded: boolean;
+  isSelected: boolean;
+  depth: number;
+  onToggleDirectory(path: string): void;
+  onPreviewFile(path: string): void;
+}): React.JSX.Element {
+  return (
+    <button role="treeitem" aria-expanded={isDirectory ? isExpanded : undefined} aria-selected={isSelected} className={`file-tree-row${isDirectory ? " is-directory" : ""}${isSelected ? " is-selected" : ""}`} onClick={() => isDirectory ? onToggleDirectory(path) : onPreviewFile(path)} onKeyDown={(event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        const rows = Array.from(event.currentTarget.closest('[role="tree"]')?.querySelectorAll<HTMLButtonElement>('[role="treeitem"]') ?? []);
+        const next = rows[rows.indexOf(event.currentTarget) + (event.key === "ArrowDown" ? 1 : -1)];
+        event.preventDefault(); next?.focus();
+      } else if (isDirectory && ((event.key === "ArrowRight" && !isExpanded) || (event.key === "ArrowLeft" && isExpanded))) { event.preventDefault(); onToggleDirectory(path); }
+    }} style={{ paddingLeft: `${8 + depth * 16}px` }} type="button">
+      {isDirectory ? <span className={`file-tree-disclosure${isExpanded ? " is-expanded" : ""}`}><Icon name="chevron" size={13} /></span> : <span aria-hidden="true" className="file-tree-disclosure is-file-slot" />}
+      {isDirectory ? <Icon className="file-tree-folder-icon" name="folder" size={14} /> : <FileTypeMarker name={name} />}
+      <span>{name}</span>
+    </button>
   );
 });
 

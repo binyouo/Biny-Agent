@@ -34,7 +34,7 @@ async function fixture(run: (f: {
     const attempt = tasks!.createAttempt("task"); tasks!.transition("task", "queued");
     const artifacts = {
       output: "candidate output", definitionFingerprint, artifactFingerprint,
-      repairScope: { enforcement: "post_execution_change_guard", changedPaths: ["artifact.txt"], violationPaths: [] },
+      repairScope: { version: 2, enforcement: "post_execution_change_guard", changedPaths: ["artifact.txt"], violationPaths: [] },
       workerExecution: { prompt: "prepare candidate", beforeWorkspace: { "original.txt": "source-hash" }, definitionFingerprint, workspaceRoot: workspace, communication: true, accessMode: "workspace", agent: "fixture" },
       communication: { inputClosed: true, messages: [{ id: "report", direction: "worker", content: "material finding", createdAt: "2026-10-31T00:00:00Z" }] },
       extensionMetadata: { identity: "retain", nested: [1, { note: "unrelated to verification" }] }

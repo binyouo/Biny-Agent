@@ -318,7 +318,8 @@ async function fixture() {
   config.context.memory.generateMemories = false;
   config.context.compaction.enabled = false;
   config.context.compaction.keepRecentMessages = 2;
-  config.context.compaction.keepRecentTokens = 2_000;
+  // 此处验证按消息数切分的分支边界；完整请求快照不应提前触发 token 上限。
+  config.context.compaction.keepRecentTokens = 20_000;
   config.heartbeat.enabled = false;
   let replies = 0;
   const model: AgentModel = testModel({
@@ -326,7 +327,8 @@ async function fixture() {
     async stream(context) {
       const summary = context.systemPrompt?.includes("durable context checkpoint") === true;
       if (summary) await f.beforeSummary?.();
-      const text = summary ? checkpointText() : `Answer ${++replies}.`;
+      const source = JSON.stringify(context.messages).match(/\[source (m\d+) kind=message role=user\]/u)?.[1] ?? "m0";
+      const text = summary ? checkpointText(source) : `Answer ${++replies}.`;
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         yield { type: "text-delta", text };
         yield { type: "finish", reason: "stop", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } };
@@ -371,7 +373,7 @@ async function fixture() {
 
 async function drain(events: AsyncIterable<unknown>): Promise<void> { for await (const _event of events) { /* exercise public API */ } }
 
-function checkpointText(): string {
+function checkpointText(source = "m0"): string {
   return [
     "## Goal", "- Preserve the request. <!-- evidence:m0 -->",
     "## Constraints & Preferences", "- (none recorded)",
@@ -379,7 +381,7 @@ function checkpointText(): string {
     "## Key Decisions", "- (none recorded)", "## Errors & Fixes", "- (none recorded)",
     "## All User Messages", "- Preserve the request. <!-- evidence:m0 -->",
     "## Next Steps", "- (none recorded)", "## Critical Context", "- (none recorded)"
-  ].join("\n");
+  ].join("\n").replaceAll("evidence:m0", `evidence:${source}`);
 }
 
 function jsonValue(value: unknown): unknown { return JSON.parse(JSON.stringify(value)); }

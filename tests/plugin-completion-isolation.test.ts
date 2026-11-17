@@ -74,6 +74,7 @@ async function* completionFixture(bindings) {
  const { ${bindingNames.join(", ")} } = bindings;
  ${variable("retryReply")}
  ${variable("retryCommitOwnsTerminal")}
+ ${variable("undeliveredTaskNotices")}
  ${waitHelper}
  try {
  ${tail}

@@ -235,7 +235,7 @@ await test("repeated detach and host close share pending local cleanup", { timeo
   } finally { release(); await first; await host.close(); }
 });
 
-for (const recovery of ["detach", "shutdown"] as const) {
+for (const recovery of ["detach", "shutdown", "replacement"] as const) {
   await test(`failed local cleanup retains its resource owner for ${recovery}`, async () => {
     const host = new McpToolHost();
     const endpoint = localEndpoint(false, true);
@@ -258,7 +258,16 @@ for (const recovery of ["detach", "shutdown"] as const) {
       await assert.rejects(host.callServerTool("local", "echo", {}), /Unknown MCP server: local/);
       assert.equal(endpoint.state.calls, 0);
       if (recovery === "detach") await host.detachLocalServer("local");
-      else await host.close();
+      else if (recovery === "shutdown") await host.close();
+      else {
+        const replacement = localEndpoint();
+        const attaching = host.attachLocalServer("local", "replacement", [], replacement.open);
+        assert.equal(host.listServers().length, 1, "the replacement and retired endpoint share one status identity");
+        assert.equal(host.listServers()[0]?.enabled, true, "the active replacement owns its visible status");
+        await attaching;
+        assert.equal(host.listServers()[0]?.connected, true);
+        await host.detachLocalServer("local");
+      }
       assert.equal(closes, 2, "failed cleanup must remain available for retry");
       assert.deepEqual(host.listServers(), []);
     } finally { await host.close(); }

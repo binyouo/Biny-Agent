@@ -46,11 +46,6 @@ export class ModelCatalogRequestError extends Error {
   }
 }
 
-/** 拉取服务商的实时模型列表；只读，不写入任何凭据或配置。 */
-export async function fetchModelCatalog(request: CatalogProviderRequest, signal?: AbortSignal): Promise<ModelCatalogEntry[]> {
-  return (await fetchModelCatalogSnapshot(request, signal)).models ?? [];
-}
-
 /** 带 HTTP 校验信息拉取目录，Provider Runtime 用它实现跨进程缓存复用。 */
 export async function fetchModelCatalogSnapshot(
   request: CatalogProviderRequest,

@@ -51,7 +51,11 @@ test("恢复的事实尚未索引时显示部分不可搜索并允许重建", as
       onCancelSleep: async () => ({ cancelled: false }), onClearMemory: async () => stats,
       onTestModelConfiguration: async () => ({ ok: false }), onLoadEmbeddingStatus: async () => pending,
       onDownloadEmbeddingModel: async () => pending, onCancelEmbeddingDownload: async () => ({ cancelled: false, status: pending }),
-      onRebuildEmbeddingIndex: async () => { rebuilds += 1; return { ...pending, indexedEntries: 2, pendingEntries: 0, degradedReason: undefined }; },
+      onRebuildEmbeddingIndex: async () => {
+        rebuilds += 1;
+        if (rebuilds === 1) throw new Error("SQLite vector extension is unavailable.");
+        return { ...pending, indexedEntries: 2, pendingEntries: 0, degradedReason: undefined };
+      },
       onCancelEmbeddingRebuild: async () => ({ cancelled: false, status: pending }),
       onNotify: () => undefined
     } as unknown as Parameters<typeof SettingsMemory>[0];
@@ -65,6 +69,11 @@ test("恢复的事实尚未索引时显示部分不可搜索并允许重建", as
     assert.equal(rebuild.disabled, false);
     await act(async () => { rebuild.click(); });
     assert.equal(rebuilds, 1);
+    assert.match(document.body.textContent ?? "", /嵌入向量重建失败/u);
+    assert.doesNotMatch(document.body.textContent ?? "", /无法读取状态/u);
+    await act(async () => { rebuild.click(); });
+    assert.equal(rebuilds, 2);
+    assert.doesNotMatch(document.body.textContent ?? "", /嵌入向量重建失败/u);
     assert.doesNotMatch(document.body.textContent ?? "", /1 条记忆.*未索引.*不能.*搜索/u);
   } finally {
     await act(() => root.unmount());

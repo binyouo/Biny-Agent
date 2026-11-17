@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { withMessageSentAt } from "../src/agent/modelMessages.js";
+import { isRuntimeContext } from "../src/agent/context/runtimeContext.js";
 
 // Parse source as text. Never import AgentSession, recorder, runtime, or attachment IO.
 const source = ts.createSourceFile("AgentSession.ts", readFileSync("src/agent/AgentSession.ts", "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -52,6 +53,7 @@ const reads: string[] = [];
 let supportChecks = 0;
 const api = runInNewContext(compiled.outputText, {
   withMessageSentAt,
+  isRuntimeContext,
   readAttachmentFromRoot: async (root: string, reference: { path: string }) => {
     assert.equal(root, "inert-attachment-root");
     reads.push(reference.path);

@@ -40,6 +40,7 @@ import { SettingsMemory } from "./SettingsMemory.js";
 import { SettingsQuickChat } from "./SettingsQuickChat.js";
 import { SettingsPageFooter } from "./SettingsPageFooter.js";
 import { SettingsExtensionsView } from "./SettingsExtensionsView.js";
+import type { DesktopQuickChatSettings } from "../../../../protocol.js";
 
 interface SettingsOverlayProps {
   open: boolean;
@@ -51,6 +52,8 @@ interface SettingsOverlayProps {
   themePreference: DesktopThemePreference;
   onThemePreference(theme: DesktopThemePreference): void;
   fontPreference: DesktopFontPreference;
+  quickChatSettings?: DesktopQuickChatSettings;
+  onQuickChatSettingsChanged?(settings: DesktopQuickChatSettings): void;
   onFontPreference(font: DesktopFontPreference): void;
   onSettingsCommitted(snapshot: DesktopSettingsSnapshot, scope?: "models" | "model-config" | "preferences" | "settings", appliedFields?: string[]): void;
   onCapabilitiesChanged?(scope: "skills" | "tools" | "all", projectId?: string): void;
@@ -170,7 +173,7 @@ function SettingsOverlayScope(props: SettingsOverlayProps): React.JSX.Element {
   return (
     <SettingsDraftProvider
       active={props.open}
-      loadSnapshot={settingsPageNeedsSnapshot(navigation.tab)}
+      loadSnapshot={settingsPageNeedsSnapshot(navigation.tab) && (props.workspace !== undefined || navigation.tab === "Computer History")}
       onCommitted={props.onSettingsCommitted}
       onFontPreview={props.onFontPreference}
       onNotify={props.onNotify}
@@ -178,6 +181,7 @@ function SettingsOverlayScope(props: SettingsOverlayProps): React.JSX.Element {
       projectId={props.workspace?.project.id}
       sessionId={props.sessionId}
       sessionRunning={props.sessionRunning}
+      appearance={{ themePreference: props.themePreference, fontPreference: props.fontPreference }}
     >
       <SettingsOverlayContent {...props} tab={navigation.tab} setTab={setTab} />
     </SettingsDraftProvider>
@@ -195,6 +199,8 @@ function SettingsOverlayContent({
   targetTab,
   themePreference,
   fontPreference,
+  quickChatSettings,
+  onQuickChatSettingsChanged,
   onNotify: _onNotify,
   onClose,
   onCapabilitiesChanged,
@@ -333,8 +339,8 @@ function SettingsOverlayContent({
   };
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
   const needsProject = !workspace && ["聊天", "网络搜索", "模型", "技能", "MCP 服务器", "插件", "记忆"].includes(activeTab);
-  // 只有"从没读到过快照且这次也失败了"才拦整页；单纯在刷新不该把已经能用的界面遮起来。
-  const loadBlocked = Boolean((workspace && settingsPageNeedsSnapshot(activeTab) || activeTab === "Computer History") && (settingsDraft.loading || settingsDraft.loadError) && !settingsDraft.snapshot);
+  const snapshotUnavailable = Boolean((workspace && settingsPageNeedsSnapshot(activeTab) || activeTab === "Computer History") && !settingsDraft.snapshot);
+  const loadBlocked = activeTab !== "通用" && snapshotUnavailable && (settingsDraft.loading || Boolean(settingsDraft.loadError));
   const openSearchResult = async (nextTab: SettingsTab): Promise<void> => {
     await selectTab(nextTab);
     titleRef.current?.focus();
@@ -400,17 +406,21 @@ function SettingsOverlayContent({
             }}
           /> : null}
           {activeTab === "通用" ? <div className="settings-preferences settings-general">
+            {snapshotUnavailable && settingsDraft.loadError ? <div className="settings-inline-error">
+              <p role="alert">{settingsDraft.loadError}</p>
+              <button aria-label="重新加载设置" className="settings-action settings-secondary-button" onClick={settingsDraft.retryLoad} type="button">重新加载</button>
+            </div> : null}
             <SettingsAppearance
               disabled={(settingsDraft.saveState === "saving" && !settingsDraft.modelSelectionSaving) || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
-              theme={settingsDraft.draft?.themePreference ?? themePreference}
+              theme={settingsDraft.draft?.themePreference ?? settingsDraft.appearanceDraft?.themePreference ?? themePreference}
               onThemeChange={settingsDraft.setThemePreference}
-              font={settingsDraft.draft?.fontPreference ?? fontPreference}
+              font={settingsDraft.draft?.fontPreference ?? settingsDraft.appearanceDraft?.fontPreference ?? fontPreference}
               onFontChange={settingsDraft.setFontPreference}
             />
             <SettingsToolModel onTest={onTestModelConfiguration} onNotify={_onNotify} />
             <SettingsVisionModel onNotify={_onNotify} />
             <SettingsSubagent busy={runtimeBusy} onOpenProviders={() => { void selectTab("模型"); }} />
-            <SettingsQuickChat />
+            <SettingsQuickChat initialSettings={quickChatSettings} onSettingsChanged={onQuickChatSettingsChanged} />
           </div> : null}
           {activeTab === "Computer History" ? <SettingsActivity /> : null}
           {activeTab === "Token 节省" ? <SettingsToolOptimization /> : null}
@@ -466,7 +476,9 @@ function SettingsOverlayContent({
             /> : null}
           </div>
           <SettingsPageFooter
-            unavailable={loadBlocked ? settingsDraft.loading ? "正在加载设置…" : "设置尚未加载" : !settingsDraft.draft ? "" : undefined}
+            unavailable={loadBlocked ? settingsDraft.loading ? "正在加载设置…" : "设置尚未加载"
+              : snapshotUnavailable && settingsDraft.loadError ? "部分设置读取失败"
+              : !settingsDraft.draft && !settingsDraft.appearanceDraft ? "" : undefined}
             blockedReason={settingsDraft.dirtyCount > 0 && settingsDraft.runtimeBlocked ? "任务运行中，共享设置暂不能保存。更改已保留。" : undefined}
             error={settingsDraft.saveError ?? settingsDraft.snapshot?.pendingRecovery?.message}
             dirtyCount={settingsDraft.dirtyCount}

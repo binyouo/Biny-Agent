@@ -29,7 +29,6 @@ for (const status of ["failed", "blocked"] as const) {
       const oldWake = f.store.listSupervisorWakes()[0]!;
       if (phase === "claimed") assert.ok(f.store.claimSupervisorWake(oldWake.wakeId));
       const added = f.store.addSupervisedNodes(before.graphId, owner, [input("C", ["B"])]);
-      f.store.createWake(before.graphId, "plan_updated");
       assert.equal(added.revision, before.revision + 1);
       assert.equal(added.replanCount, 1);
       assert.deepEqual(added.nodes.slice(0, before.nodes.length), before.nodes);

@@ -10,6 +10,7 @@ asarUnpack:
   - node_modules/sharp/**/*
   - node_modules/@img/**/*
   - node_modules/@vscode/ripgrep*/**/*
+  - node_modules/sqlite-vec*/**/*
 directories:
   output: release
   buildResources: build

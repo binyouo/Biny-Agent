@@ -26,8 +26,7 @@ export function SettingsToolModel({ onTest, onNotify }: {
     if (mounted.current) setError(message);
     else onNotify(message);
   };
-  if (!draft || !snapshot) return null;
-  const active = snapshot.models.configured.find((model) => model.alias === snapshot.models.resolvedToolModel);
+  const active = snapshot?.models.configured.find((model) => model.alias === snapshot.models.resolvedToolModel);
   const selectModel = (alias: string | undefined): void => {
     if (saving) return;
     setSaving(true);
@@ -54,23 +53,23 @@ export function SettingsToolModel({ onTest, onNotify }: {
         <h3>工具模型</h3>
         <div className="settings-form-group">
           <p>在保证生成质量的前提下尽可能快的模型，用于对话标题生成、记忆相关操作等自动化任务。</p>
-          {snapshot.hasRunningTasks ? <p>下回合生效。</p> : null}
+          {snapshot?.hasRunningTasks ? <p>下回合生效。</p> : null}
           <div className="tool-model-row">
             <SettingsModelPicker
               ariaLabel="工具模型"
-              disabled={saving || testing || (saveState === "saving" && !modelSelectionSaving) || saveState === "rolling_back" || saveState === "recovery_required"}
-              groups={modelPickerGroups(snapshot.models.configured.filter((model) => model.providerType !== "acp"), snapshot.models.connections)}
+              disabled={!draft || !snapshot || saving || testing || (saveState === "saving" && !modelSelectionSaving) || saveState === "rolling_back" || saveState === "recovery_required"}
+              groups={modelPickerGroups(snapshot?.models.configured.filter((model) => model.providerType !== "acp") ?? [], snapshot?.models.connections ?? [])}
               inheritLabel="自动选择"
               inheritDetail={active?.model}
-              resolvedValue={snapshot.models.resolvedToolModel}
-              selectionHint={snapshot.models.toolModel === undefined && active ? "自动" : undefined}
+              resolvedValue={snapshot?.models.resolvedToolModel}
+              selectionHint={snapshot?.models.toolModel === undefined && active ? "自动" : undefined}
               onChange={selectModel}
-              placeholder="自动选择"
-              value={snapshot.models.toolModel}
+              placeholder={snapshot ? "自动选择" : "—"}
+              value={snapshot?.models.toolModel}
             />
             <ModelTestButton disabled={!active || saving} label="测试模型" testing={testing} onClick={runTest} />
           </div>
-          {active ? null : <p className="tool-model-status">暂无可用工具模型，请先在「模型供应商」中配置。</p>}
+          {snapshot && !active ? <p className="tool-model-status">暂无可用工具模型，请先在「模型供应商」中配置。</p> : null}
           <ModelTestResult result={testResult} />
           {error ? <p role="alert">{error}</p> : null}
         </div>
