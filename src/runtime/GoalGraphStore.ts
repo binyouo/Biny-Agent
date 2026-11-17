@@ -1,7 +1,7 @@
 /**
  * Agent Graph durable supervisor。
  *
- * Graph 节点的 readiness、intent claim 和 wake 都落在 SQLite；模型只负责执行节点
+ * Graph 节点状态、intent claim 和监督检查点落在 SQLite；模型只负责执行节点
  * prompt，不能通过伪造普通用户消息改变 graph 状态。
  */
 import { createHash, randomUUID } from "node:crypto";
@@ -66,7 +66,6 @@ export interface SupervisedGraphInput {
 export interface GraphWakeRecord {
   wakeId: string;
   graphId: string;
-  kind: "dispatch" | "supervisor";
   reason: string;
   status: "pending" | "claimed" | "completed" | "discarded" | "blocked";
   attempt: number;
@@ -633,49 +632,9 @@ export class GoalGraphStore {
     return current;
   }
 
-  createWake(graphId: string, reason: string): string {
-    this.requireGraph(graphId);
-    const wakeId = randomUUID();
-    const now = new Date().toISOString();
-    return this.withGraphEvent({
-      eventId: "graph:" + graphId + ":wake:" + wakeId + ":created",
-      sessionId: "graph:" + graphId,
-      invocationId: wakeId,
-      runId: "graph:" + graphId,
-      turnId: "graph:" + graphId,
-      eventType: "graph.wake.created",
-      payload: { graphId, wakeId, reason },
-      createdAt: now
-    }, () => {
-      this.database.prepare("INSERT INTO graph_wakes (wake_id, graph_id, reason, kind, status, attempt, created_at) VALUES (?, ?, ?, 'dispatch', 'pending', 0, ?)").run(wakeId, graphId, reason, now);
-      return wakeId;
-    });
-  }
-
-  claimWake(graphId: string): string | undefined {
-    this.requireGraph(graphId);
-    const row = this.database.prepare("SELECT wake_id, reason, attempt FROM graph_wakes WHERE graph_id = ? AND kind = 'dispatch' AND status IN ('pending', 'claimed') ORDER BY created_at ASC LIMIT 1").get(graphId) as Record<string, unknown> | undefined;
-    if (!row) return undefined;
-    const wakeId = stringValue(row.wake_id);
-    const now = new Date().toISOString();
-    return this.withGraphEvent({
-      eventId: "graph:" + graphId + ":wake:" + wakeId + ":attempt:" + String(integerValue(row.attempt) + 1),
-      sessionId: "graph:" + graphId,
-      invocationId: wakeId,
-      runId: "graph:" + graphId,
-      turnId: "graph:" + graphId,
-      eventType: "graph.wake.claimed",
-      payload: { graphId, wakeId, reason: row.reason, attempt: integerValue(row.attempt) + 1 },
-      createdAt: now
-    }, () => {
-      const result = this.database.prepare("UPDATE graph_wakes SET status = 'claimed', attempt = attempt + 1 WHERE wake_id = ? AND status IN ('pending', 'claimed') AND attempt = ?").run(wakeId, integerValue(row.attempt));
-      return result.changes === 0 ? undefined : wakeId;
-    });
-  }
-
   listSupervisorWakes(): GraphWakeRecord[] {
     const rows = this.database.prepare(`
-      SELECT wake_id, graph_id, kind, reason, status, attempt, graph_revision,
+      SELECT wake_id, graph_id, reason, status, attempt, graph_revision,
              checkpoint, session_id, run_id, created_at, completed_at
       FROM graph_wakes
       WHERE kind = 'supervisor' AND status IN ('pending', 'claimed')
@@ -686,7 +645,7 @@ export class GoalGraphStore {
 
   claimSupervisorWake(wakeId: string): GraphWakeRecord | undefined {
     const row = this.database.prepare(`
-      SELECT wake_id, graph_id, kind, reason, status, attempt, graph_revision,
+      SELECT wake_id, graph_id, reason, status, attempt, graph_revision,
              checkpoint, session_id, run_id, created_at, completed_at
       FROM graph_wakes WHERE wake_id = ? AND kind = 'supervisor'
     `).get(wakeId) as Record<string, unknown> | undefined;
@@ -734,25 +693,6 @@ export class GoalGraphStore {
 
   runtimeRun(runId: string): ReturnType<RuntimeEventAuthority["getRun"]> {
     return this.authority.getRun(runId);
-  }
-
-  completeWake(wakeId: string): void {
-    const now = new Date().toISOString();
-    const row = this.database.prepare("SELECT graph_id FROM graph_wakes WHERE wake_id = ?").get(wakeId) as Record<string, unknown> | undefined;
-    if (!row) return;
-    const graphId = stringValue(row.graph_id);
-    this.withGraphEvent({
-      eventId: "graph:" + graphId + ":wake:" + wakeId + ":completed",
-      sessionId: "graph:" + graphId,
-      invocationId: wakeId,
-      runId: "graph:" + graphId,
-      turnId: "graph:" + graphId,
-      eventType: "graph.wake.completed",
-      payload: { graphId, wakeId },
-      createdAt: now
-    }, () => {
-      this.database.prepare("UPDATE graph_wakes SET status = 'completed', completed_at = ? WHERE wake_id = ? AND status = 'claimed'").run(now, wakeId);
-    });
   }
 
   listRunningGraphIds(): string[] {
@@ -906,9 +846,7 @@ export class GoalGraphStore {
     createdAt: string;
   }, execute: () => T): T {
     const result = this.authority.runEventTransaction(input, execute);
-    if (!input.eventType.startsWith("graph.wake.")) {
-      for (const listener of this.changeListeners) queueMicrotask(listener);
-    }
+    for (const listener of this.changeListeners) queueMicrotask(listener);
     return result;
   }
 
@@ -1048,8 +986,6 @@ export class GraphSupervisor {
       for (const node of ready) {
         const claim = store.claimIntent(graphId, node.nodeId, randomUUID(), "graph:" + graphId + ":" + node.nodeId);
         if (!claim) continue;
-        const wakeId = store.claimWake(graphId);
-        if (wakeId !== undefined) store.completeWake(wakeId);
         this.active += 1;
         void this.executeNode(graphId, node, claim).catch(() => undefined).finally(() => {
           this.active -= 1;
@@ -1226,8 +1162,6 @@ function toWake(row: Record<string, unknown>): GraphWakeRecord {
   if (checkpoint !== undefined && checkpoint !== "needs_attention" && checkpoint !== "settled") {
     throw new Error(`Invalid supervisor checkpoint: ${checkpoint}`);
   }
-  const kind = stringValue(row.kind);
-  if (kind !== "dispatch" && kind !== "supervisor") throw new Error(`Invalid graph wake kind: ${kind}`);
   const status = stringValue(row.status);
   if (status !== "pending" && status !== "claimed" && status !== "completed" && status !== "discarded" && status !== "blocked") {
     throw new Error(`Invalid graph wake status: ${status}`);
@@ -1235,7 +1169,6 @@ function toWake(row: Record<string, unknown>): GraphWakeRecord {
   return {
     wakeId: stringValue(row.wake_id),
     graphId: stringValue(row.graph_id),
-    kind,
     reason: stringValue(row.reason),
     status,
     attempt: integerValue(row.attempt),

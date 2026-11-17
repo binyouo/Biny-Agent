@@ -71,6 +71,16 @@ export function recoveryMaterializationPlan(
   for (const message of replay.messages) if (message.role === "assistant") {
     for (const part of message.content) if (part.type === "toolCall") projectedCallCounts.set(part.id, (projectedCallCounts.get(part.id) ?? 0) + 1);
   }
+  // The last canonical user/assistant boundary excludes every earlier call.
+  // Compute it once instead of copying each historical message suffix.
+  let lastCanonicalBoundary = -1;
+  for (let index = replay.messages.length - 1; index >= 0; index -= 1) {
+    const message = replay.messages[index]!;
+    if (replay.messageReferences[index]?.id && (message.role === "assistant" || message.role === "user")) {
+      lastCanonicalBoundary = index;
+      break;
+    }
+  }
   const messages: RecoveryMaterializationPlan["messages"] = [];
   for (let index = 0; index < replay.messages.length; index += 1) {
     const message = replay.messages[index]!;
@@ -80,8 +90,7 @@ export function recoveryMaterializationPlan(
     const ids = new Set(parts.map(part => part.id));
     // A later canonical assistant/user is already a committed boundary. Never retrofit
     // old gaps behind it; only the unfinished suffix can be extended by new ancestors.
-    if (replay.messages.slice(index + 1).some((later, offset) => replay.messageReferences[index + 1 + offset]?.id
-      && (later.role === "assistant" || later.role === "user"))) continue;
+    if (index < lastCanonicalBoundary) continue;
     const pairedResults = replay.messages.slice(index + 1).filter((item): item is Extract<AgentMessage, { role: "toolResult" }> =>
       item.role === "toolResult" && ids.has(item.toolCallId));
     if (pairedResults.length !== parts.length || new Set(pairedResults.map(item => item.toolCallId)).size !== parts.length) continue;
@@ -136,13 +145,19 @@ export function assertRecoveryMaterializationSuffix(
   const ids = new Set(prefixEvents.flatMap(event => (event.type === "agent_message" || event.type === "user_message") && event.messageId ? [event.messageId] : []));
   const representedCalls = new Set(prefixEvents.flatMap(event => event.type === "agent_message" && event.message.role === "assistant"
     ? event.message.content.flatMap(part => part.type === "toolCall" ? [part.id] : []) : []));
+  // Preserve Array.find's first matching audit, including duplicate IDs. Build
+  // the index once rather than rescanning long history for every copied result.
+  const audits = new Map<string, Extract<SessionEvent, { type: "tool_result" }>>();
+  for (const event of prefixEvents) {
+    if (event.type === "tool_result" && event.toolCallId !== undefined && !audits.has(event.toolCallId)) audits.set(event.toolCallId, event);
+  }
   let cursor = prefixPlan.parentMessageId;
   for (const event of laterEvents) {
     if (event.type !== "agent_message") continue;
     const key = materializationKey(event.message);
     const message = expected.get(key);
     const toolCallId = event.message.role === "toolResult" ? event.message.toolCallId : undefined;
-    const audit = toolCallId === undefined ? undefined : prefixEvents.find(item => item.type === "tool_result" && item.toolCallId === toolCallId);
+    const audit = toolCallId === undefined ? undefined : audits.get(toolCallId);
     const isErrorValid = event.message.role !== "toolResult" || event.message.isError === undefined
       || audit?.type === "tool_result" && event.message.isError === (audit.executionStatus !== "succeeded");
     if (!message || !isDeepStrictEqual(materializationBody(event.message), materializationBody(message)) || !isErrorValid

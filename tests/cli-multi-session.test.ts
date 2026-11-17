@@ -24,7 +24,7 @@ const provider = createServer(async (request, response) => {
   let text = "";
   for await (const chunk of request) text += String(chunk);
   const body = JSON.parse(text) as { messages: Array<{ role: string; content: unknown }> };
-  const marker = JSON.stringify(body.messages.filter((message) => message.role === "user").at(-1)?.content).match(/terminal-probe-[A-F]/gu)?.at(-1);
+  const marker = JSON.stringify(body.messages.filter((message) => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)?.content).match(/terminal-probe-[A-F]/gu)?.at(-1);
   if (!marker || responses.has(marker)) { sendText(response, "[]"); return; }
   responses.set(marker, response);
 });

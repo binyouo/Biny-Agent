@@ -24,7 +24,7 @@ import { isHeartbeatSessionId, listSessionFiles, readSessionFileOrCached, sessio
 import type { SessionEvent, SessionTurnStatusEvent } from "./recorder.js";
 export type { SessionEvent } from "./recorder.js";
 import { publicAssistantMessage, publicUserMessage } from "./publicMessage.js";
-import { validateRuntimeEventRecord, type RuntimeEventIdentity } from "./runtimeEvent.js";
+import { validateRuntimeEventRecord } from "./runtimeEvent.js";
 import { contextCheckpointSchema, contextStateSchema } from "./contextSchema.js";
 
 const sessionListReadConcurrency = 8;
@@ -102,6 +102,8 @@ const agentToolCallContentSchema = z.object({
   name: z.string(),
   arguments: z.record(z.string(), z.unknown()),
   invalid: z.boolean().optional(),
+  viaToolCall: z.literal(true).optional(),
+  geminiArgumentsJson: z.string().optional(),
   providerMetadata: z.record(z.string(), z.unknown()).optional()
 }).passthrough();
 const persistedAgentMessageSchema = z.discriminatedUnion("role", [
@@ -577,37 +579,6 @@ function parseSessionEventsWithPrefix(
     lineStart = lineEnd + 1;
   }
   return { events: head === 0 ? events : [...events.slice(head), ...events.slice(0, head)], truncated };
-}
-
-export function runtimeEventIdentity(event: SessionEvent): RuntimeEventIdentity | undefined {
-  return event.runtime;
-}
-
-/**
- * Makes an existing JSONL session safe for append after an interrupted write.
- * A valid final event only needs a newline; an invalid unterminated fragment is
- * truncated back to the previous complete line.
- */
-export async function repairSessionTailForAppend(filePath: string): Promise<void> {
-  const handle = await fs.open(filePath, constants.O_RDWR | noFollowFlag());
-  try {
-    await assertStandaloneSessionBinding(filePath, handle);
-    const raw = await readBoundedSessionHandle(handle, filePath);
-    await assertStandaloneSessionBinding(filePath, handle);
-    if (raw.length === 0 || raw.at(-1) === 0x0a) return;
-
-    const lastNewline = raw.lastIndexOf(0x0a);
-    const tail = raw.subarray(lastNewline + 1).toString("utf8");
-    try {
-      JSON.parse(tail);
-      await handle.write("\n", raw.length, "utf8");
-    } catch {
-      await handle.truncate(lastNewline + 1);
-    }
-    await assertStandaloneSessionBinding(filePath, handle);
-  } finally {
-    await handle.close();
-  }
 }
 
 export async function listSessionSummaries(workspaceRoot: string, includeHeartbeat = true): Promise<SessionSummary[]> {

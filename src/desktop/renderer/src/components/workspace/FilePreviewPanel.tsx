@@ -5,7 +5,7 @@
  * data URL 内联显示；音视频读取本地流地址，其他二进制/超限给「使用系统应用打开」兜底。文件树支持懒加载展开
  * 和名称过滤。这里只做展示与本地交互，数据请求全部由 useWorkspaceInspector 的回调注入。
  */
-import { memo, useDeferredValue, useState } from "react";
+import { memo, useDeferredValue, useLayoutEffect, useRef, useState } from "react";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import type {
   DesktopWorkspaceDirectoryEntry,
@@ -68,28 +68,43 @@ export const FilePreviewPanel = memo(function FilePreviewPanel({ width, preview,
   const [resizing, setResizing] = useState(false);
   const browserOnly = !preview && narrow;
   const treeVisible = !preview || (fileTreeOpen && !narrow);
+  const resizeCleanup = useRef<(() => void) | undefined>(undefined);
+  useLayoutEffect(() => () => { resizeCleanup.current?.(); }, [projectId, treeVisible, browserOnly, width]);
   // 按目标宽度布局，开合中的裁切宽度不回写用户的文件树宽度。
   const startTreeResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     event.preventDefault();
     event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeCleanup.current?.();
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    target.setPointerCapture(pointerId);
     setResizing(true);
     const startX = event.clientX;
     const startWidth = treeWidth;
     // 上限用拖拽起点的面板宽算一次；拖树期间面板宽不变，每帧重算反而白费。
     const maxWidth = Math.min(MAX_TREE_WIDTH, Math.max(MIN_TREE_WIDTH, width - MIN_PREVIEW_WIDTH));
+    let retired = false;
     const move = (moveEvent: PointerEvent): void => {
+      if (retired || moveEvent.pointerId !== pointerId) return;
       setTreeWidth(Math.min(maxWidth, Math.max(MIN_TREE_WIDTH, startWidth + moveEvent.clientX - startX)));
     };
     const stop = (): void => {
+      if (retired) return;
+      retired = true;
+      if (resizeCleanup.current === stop) resizeCleanup.current = undefined;
       setResizing(false);
       window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      target.removeEventListener("lostpointercapture", finish);
+      if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
     };
+    const finish = (event: PointerEvent): void => { if (event.pointerId === pointerId) stop(); };
+    resizeCleanup.current = stop;
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
-    window.addEventListener("pointercancel", stop, { once: true });
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    target.addEventListener("lostpointercapture", finish);
   };
   return (
     <aside aria-label={preview ? "文件预览" : "文件浏览器"} className="file-preview-panel file-browser-panel">

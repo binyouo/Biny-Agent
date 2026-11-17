@@ -17,9 +17,9 @@ export function withEmotionHistory(message: AgentUserMessage, snapshot: string):
 export function retainEmotionHistory(messages: AgentMessage[]): AgentMessage[] {
   return messages.map(message => {
     if (message.role !== "user") return message;
+    // 已发送的上下文不能在回合结束时重写；原始用户正文仍单独保留。
+    if (message.originalContent !== undefined || message.runtimeContext) return message;
     if (message.emotionSnapshot) return withEmotionHistory(message, message.emotionSnapshot);
-    if (message.originalContent === undefined) return message;
-    const { originalContent, ...canonical } = message;
-    return { ...canonical, content: originalContent };
+    return message;
   });
 }

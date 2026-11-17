@@ -191,8 +191,8 @@ test("legacy content-only workspace snapshots fail closed and are never silently
     }
     const snapshot = await captureTaskWorkspaceSnapshot(root, []);
     const delta = compareTaskWorkspaceSnapshots(legacy, snapshot, ["artifact.sh"]);
-    assert.deepEqual(delta.changedPaths, ["artifact.sh", "outside.txt", "verify.sh"]);
-    assert.deepEqual(delta.violationPaths, ["outside.txt", "verify.sh"]);
+    assert.deepEqual(delta.changedPaths, [".", "artifact.sh", "outside.txt", "verify.sh"]);
+    assert.deepEqual(delta.violationPaths, [".", "outside.txt", "verify.sh"]);
     assert.deepEqual(compareTaskWorkspaceSnapshots(snapshot, await captureTaskWorkspaceSnapshot(root, []), []).changedPaths, []);
   });
 });

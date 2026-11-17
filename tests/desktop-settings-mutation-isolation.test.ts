@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { createFileConfigStore } from "../src/config/store.js";
+import { AgentMemoryClient } from "../src/runtime/memory/client.js";
 import { DesktopAgentManager } from "../src/desktop/electron/main/DesktopAgentManager.js";
 import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProjectService.js";
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
@@ -17,7 +18,15 @@ import { InMemoryModelsStore, modelCatalogCacheKey } from "../src/llm/ModelsStor
 async function createFixture(fetcher?: typeof fetch) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-settings-mutation-isolation-"));
   const previousGlobalDir = process.env.BINY_AGENT_DIR;
-  process.env.BINY_AGENT_DIR = path.join(root, "global");
+  const agentRoot = path.join(root, "global");
+  process.env.BINY_AGENT_DIR = agentRoot;
+  const ownerRequests: Promise<unknown>[] = [];
+  const originalSleepStatus = AgentMemoryClient.prototype.sleepStatus;
+  const sleepStatus = mock.method(AgentMemoryClient.prototype, "sleepStatus", function (this: AgentMemoryClient, ...args: Parameters<AgentMemoryClient["sleepStatus"]>) {
+    const request = originalSleepStatus.apply(this, args);
+    if (this.root === agentRoot) ownerRequests.push(request);
+    return request;
+  });
   const workspace = path.join(root, "project");
   await mkdir(workspace);
   const state = new DesktopStateStore(path.join(root, "state.json"));
@@ -48,10 +57,19 @@ async function createFixture(fetcher?: typeof fetch) {
     throw new Error("Saving a model choice must not fetch remote catalogs");
   }));
   return { root, manager, store, state, project, projects, catalogs, async close() {
-    await manager.closeAll();
-    await removeTestRoot(root, { recursive: true, force: true });
-    if (previousGlobalDir === undefined) delete process.env.BINY_AGENT_DIR;
-    else process.env.BINY_AGENT_DIR = previousGlobalDir;
+    try {
+      try { await manager.closeAll(); }
+      finally {
+        // 全局 owner 的预热独立于聊天 Host；先等本用例发起的真实请求结束，
+        // 再让清理器停止已注册进程，避免进程启动晚于目录扫描。
+        await Promise.allSettled(ownerRequests);
+        await removeTestRoot(root, { recursive: true, force: true });
+      }
+    } finally {
+      sleepStatus.mock.restore();
+      if (previousGlobalDir === undefined) delete process.env.BINY_AGENT_DIR;
+      else process.env.BINY_AGENT_DIR = previousGlobalDir;
+    }
   } };
 }
 

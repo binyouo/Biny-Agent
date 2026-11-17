@@ -1,3 +1,4 @@
+import { isRuntimeContext } from "./runtimeContext.js";
 /**
  * 实际模型输入的本地估算与分类。各模型的 tokenizer 和协议开销不同，UTF-8 估算
  * 只用于分类权重及未回报 usage 时的容量；provider 的完整 inputTokens 才是总量真值。
@@ -14,7 +15,12 @@ export function estimateTokens(value: string): number {
 
 export function messageTokenCost(message: AgentMessage): number {
   message = projectMessageSentAt(message);
+  if (message.role === "toolResult" && message.requestSnapshot) message = { ...message, ...message.requestSnapshot };
   let tokens = 4;
+  if (message.role === "toolResult" && message.toolName === "ToolSearch") {
+    const schemas = (message.details as { loadedToolSchemas?: unknown } | undefined)?.loadedToolSchemas;
+    if (schemas) tokens += estimateTokens(JSON.stringify(schemas));
+  }
   if (typeof message.content === "string") return tokens + estimateTokens(message.content);
   for (const part of message.content) {
     if (part.type === "text" || part.type === "reasoning") tokens += estimateTokens(part.text);
@@ -48,6 +54,8 @@ export function estimateContextBreakdown(input: ContextTokenInput): ContextToken
     const cost = messageTokenCost(message);
     if (message.role === "toolResult" && input.toolSources.get(message.toolName) === "skill") {
       breakdown.skills += cost;
+    } else if (message.role === "user" && isRuntimeContext(message)) {
+      breakdown.other += cost;
     } else if (message.role === "user" && message.originalContent !== undefined) {
       const originalCost = Math.min(cost, messageTokenCost({ ...message, content: message.originalContent }));
       breakdown.messages += originalCost;

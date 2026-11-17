@@ -53,7 +53,11 @@ async function fixture(context: TestContext, withStore = true) {
     model: testModel({
       provider: "fixture", modelId: "todo-prompt", runtime: "builtin-llama.cpp", dataResidency: "local",
       stream: async (request, options) => {
-        if (options?.requestContext?.operation === "agent") requests.push(request.systemPrompt ?? "");
+        if (options?.requestContext?.operation === "agent") {
+          assert.doesNotMatch(request.systemPrompt ?? "", /## Current plan|Fallback plan marker/u);
+          const snapshot = request.messages.findLast(message => message.role === "user" && JSON.stringify(message.content).includes("Current todo context;"));
+          requests.push(typeof snapshot?.content === "string" ? snapshot.content : snapshot ? JSON.stringify(snapshot.content) : "");
+        }
         return (async function* (): AsyncGenerator<ModelStreamEvent> {
           yield { type: "text-delta", text: "Fixture answer" };
           yield { type: "finish", reason: "stop" };

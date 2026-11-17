@@ -173,7 +173,7 @@ async function main(): Promise<void> {
     assert.equal(outcome?.status, "completed");
     assert.equal(requests.length, 1);
     assert.ok(retrievedContext[0]?.includes("Working note: prefer concise build logs."), "plugin should return context to the prompt adapter");
-    const promptUserMessage = requests[0]?.messages.at(-1);
+    const promptUserMessage = requests[0]?.messages.filter(message => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1);
     assert.ok(requests[0]?.systemPrompt?.includes("Working note: prefer concise build logs."));
     assert.ok(requests[0]?.systemPrompt?.includes("Search result: keep build output readable."));
     assert.equal(promptUserMessage?.role, "user");

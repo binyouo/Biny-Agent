@@ -163,7 +163,7 @@ try {
   assert.equal(updatedEntry?.symbols.includes("createdPatchContext"), false);
   assert.equal(afterUpdate.snapshot.revision, afterCreate.snapshot.revision + 1);
   const modelContext = await contextMemory.prepareTurn(contextQuery, "system", undefined, [], false);
-  assert.match(modelContext.systemPrompt ?? "", /updatedPatchContextLonger/u, "the next prompt receives refreshed RepoMap symbols");
+  assert.match(JSON.stringify(modelContext.messages.find(message => message.role === "user" && message.runtimeContext === "workspace")), /updatedPatchContextLonger/u, "the next request receives refreshed RepoMap symbols in its workspace snapshot");
 
   const warm = await workspace.prepareTurn(contextQuery);
   assert.equal(warm.snapshot, afterUpdate.snapshot, "an unchanged next turn retains the warm snapshot");

@@ -2,20 +2,22 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseSessionEvents, readSessionEvents, repairSessionTailForAppend } from "../src/session/events.js";
+import { parseSessionEvents, readSessionEvents } from "../src/session/events.js";
 import { clearSessionParseCache } from "../src/session/parseCache.js";
 import { activeSessionMessageIds, sessionMessageTree } from "../src/session/messageTree.js";
 import { maxSessionEvents, maxSessionEventLineBytes, maxSessionFileBytes } from "../src/session/limits.js";
-import type { SessionEvent } from "../src/session/recorder.js";
+import { SessionRecorder, type SessionEvent } from "../src/session/recorder.js";
+import { ensureAgentDirs, sessionFilePath } from "../src/session/store.js";
 import { replaySessionEvents } from "../src/session/replay.js";
 import { measureSessionRead } from "./helpers/sessionReadMetrics.js";
 
 const row = (event: SessionEvent): string => `${JSON.stringify(event)}\n`;
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-history-hot-"));
+await ensureAgentDirs(root);
 let failures = 0;
 async function test(name: string, run: (file: string) => Promise<void>): Promise<void> {
   clearSessionParseCache();
-  const file = path.join(root, `${name.replaceAll(/[^a-z0-9]/gu, "-")}.jsonl`);
+  const file = sessionFilePath(root, name.replaceAll(/[^a-z0-9]/gu, "-"));
   try { await run(file); console.log(`PASS ${name}`); }
   catch (error) { failures++; console.error(`FAIL ${name}`, error); }
 }
@@ -82,9 +84,17 @@ try {
     await fs.appendFile(file, tail.subarray(0, split)); await parity(file);
     await fs.appendFile(file, tail.subarray(split)); await parity(file);
     await fs.appendFile(file, '{"type":"user_message",'); await parity(file);
-    await repairSessionTailForAppend(file); await parity(file);
+    {
+      const recorder = new SessionRecorder(root, path.basename(file, ".jsonl"));
+      try { recorder.repairTailForAppend(); } finally { await recorder.close(); }
+    }
+    await parity(file);
     await fs.appendFile(file, row({ type: "user_message", content: "valid tail" }).trimEnd()); await parity(file);
-    await repairSessionTailForAppend(file); await parity(file);
+    {
+      const recorder = new SessionRecorder(root, path.basename(file, ".jsonl"));
+      try { recorder.repairTailForAppend(); } finally { await recorder.close(); }
+    }
+    await parity(file);
   });
   await test("recovery facts append without duplicating synthetic results", async (file) => {
     const events: SessionEvent[] = [

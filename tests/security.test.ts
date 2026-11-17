@@ -29,7 +29,6 @@ try {
     soulPrompt: renderSoulPrompt("Soul should remain stable.", "user"),
     identityPrompt: "<biny_identity>USER PROFILE\nprivate user preference</biny_identity>",
     parentThreadPrompt: "PARENT THREAD\nprivate parent context",
-    tools: [{ name: "Read", promptSnippet: "Read a file" }]
   });
   const securityIndex = first.indexOf("<!-- biny-security:start -->");
   const soulIndex = first.indexOf("<!-- biny-soul:start -->");

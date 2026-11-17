@@ -16,6 +16,7 @@ import { defaultConfig, type AgentConfig } from "../src/config/schema.js";
 import { createCommandRuntime, type CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { InteractiveAgentRuntime } from "../src/runtime/InteractiveAgentRuntime.js";
 import { startRuntimeHost, connectRuntimeHost } from "../src/runtime/RuntimeHost.js";
+import { RuntimeEventAuthority, type RuntimeEventPage } from "../src/runtime/RuntimeAuthority.js";
 import type { GraphRecord } from "../src/runtime/GoalGraphStore.js";
 import type { TaskRunWithAttempts } from "../src/runtime/TaskRunStore.js";
 import { readTaskDefinition } from "../src/runtime/taskVerification.js";
@@ -53,6 +54,22 @@ if (process.argv[2] === "paused-report-crash-child") {
       assert.equal(boundary.graph.status, "paused");
       assert.deepEqual(boundary.graph.nodes.map((node) => node.status), ["running", "pending"]);
       assert.equal((boundary.completedTask.attempts[0]?.artifacts as { output?: unknown }).output, reportA);
+      const legacyWakes = [
+        { wake_id: "legacy-claimed", status: "claimed", attempt: 1 },
+        { wake_id: "legacy-pending", status: "pending", attempt: 0 }
+      ].map(row => ({ ...row, reason: "legacy_dispatch", created_at: "2026-01-01T00:00:00.000Z", completed_at: null }));
+      const authority = await RuntimeEventAuthority.open(root);
+      try {
+        // 旧版记录留在原数据库中；升级后的恢复不应再领取它们，也不应清除历史。
+        for (const wake of legacyWakes) authority.databaseHandle().prepare(
+          "INSERT INTO graph_wakes (wake_id, graph_id, reason, kind, status, attempt, created_at) VALUES (?, ?, ?, 'dispatch', ?, ?, ?)"
+        ).run(wake.wake_id, boundary.graphId, wake.reason, wake.status, wake.attempt, wake.created_at);
+        authority.appendEvent({
+          eventId: "legacy-dispatch-created", sessionId: "graph:" + boundary.graphId,
+          runId: "graph:" + boundary.graphId, turnId: "graph:" + boundary.graphId,
+          eventType: "graph.wake.created", payload: { wakeId: "legacy-pending" }
+        });
+      } finally { authority.close(); }
       let repeatedA = 0;
       let secondReports = 0;
       globalThis.fetch = (async (_input, init): Promise<Response> => {
@@ -132,6 +149,28 @@ if (process.argv[2] === "paused-report-crash-child") {
       const listed = (await client.planList(boundary.sessionId)).find((plan) => plan.graphId === boundary.graphId)!;
       assert.deepEqual(listed.nodes.map((node) => node.status), ["completed", "completed"]);
       assert.deepEqual(listed.pendingApprovals, []);
+      assert.equal((await client.graphResume(boundary.graphId)).accepted, true);
+      await client.waitForIdle();
+      assert.equal(repeatedA, 0);
+      assert.equal(secondReports, 1, "repeated resume must not repeat either completed Worker");
+      const persisted = await RuntimeEventAuthority.openReadOnly(root);
+      assert.ok(persisted);
+      try {
+        const rows = persisted.databaseHandle().prepare(
+          "SELECT wake_id, status, attempt, reason, created_at, completed_at FROM graph_wakes WHERE kind = 'dispatch' ORDER BY wake_id"
+        ).all().map(row => ({ ...row }));
+        assert.deepEqual(rows, legacyWakes, "resume preserves legacy dispatch records without creating or consuming any");
+      } finally { persisted.close(); }
+      let graphEvents = await client.graphEvents(boundary.graphId, { limit: 1000 }) as RuntimeEventPage;
+      const supervisionDeadline = Date.now() + 10_000;
+      while (!graphEvents.events.some(event => event.eventType === "graph.supervisor_wake.finished"
+        && (event.payload as { status?: string }).status === "completed")) {
+        assert.ok(Date.now() < supervisionDeadline, "the actual supervisor checkpoint must complete after recovery");
+        await new Promise<void>(resolve => setTimeout(resolve, 10));
+        graphEvents = await client.graphEvents(boundary.graphId, { limit: 1000 }) as RuntimeEventPage;
+      }
+      assert.deepEqual(graphEvents.events.filter(event => event.eventType.startsWith("graph.wake."))
+        .map(event => event.eventId), ["legacy-dispatch-created"], "historical dispatch audit remains readable without new dispatch events");
       assert.equal(await readFile(path.join(root, "source.txt"), "utf8"), "source fact");
     } finally {
       // Keep the fixture provider installed while owned runtime work drains.

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { RedactionStore } from "../src/privacy/store.js";
 import { createPrivacyFetch } from "../src/privacy/privacyFetch.js";
 import { recordMask, maskingOverview, maskingDetail, resetMaskRecordsForTest } from "../src/privacy/record.js";
-import { maskText, defaultRedactionSettings, resetStoreForTest, placeholderTag, type RedactionSettings } from "../src/privacy/index.js";
+import { maskText, defaultRedactionSettings, placeholderTag, type RedactionSettings } from "../src/privacy/index.js";
 
 function on(): RedactionSettings {
   return { ...defaultRedactionSettings, enabled: true };
@@ -11,7 +12,6 @@ function on(): RedactionSettings {
 const REAL_KEY = "sk-ant-api03-" + "Q7bK2mZ9pL4nR8sT1vW5xY0aC3dE6fG9hJ2k";
 
 test("privacy fetch masks the outbound body and restores the inbound JSON", async () => {
-  resetStoreForTest();
   resetMaskRecordsForTest();
   let seenBody = "";
   const baseFetch: typeof globalThis.fetch = async (_input, init) => {
@@ -29,7 +29,6 @@ test("privacy fetch masks the outbound body and restores the inbound JSON", asyn
 });
 
 test("privacy fetch records a request even when nothing needed masking", async () => {
-  resetStoreForTest();
   resetMaskRecordsForTest();
   const baseFetch: typeof globalThis.fetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   const fetch = createPrivacyFetch(baseFetch, { settings: on(), provider: "test", model: "m1" });
@@ -52,9 +51,9 @@ test("privacy fetch passes through unchanged when masking is off", async () => {
 });
 
 test("records keep the before/after diff for display, without persisting originals", async () => {
-  resetStoreForTest();
+  const store = new RedactionStore();
   resetMaskRecordsForTest();
-  const { segments } = maskText(REAL_KEY, on());
+  const { segments } = maskText(REAL_KEY, on(), store);
   const record = recordMask({ provider: "acme", model: "m2", segments: [{ path: "messages.0.content", original: REAL_KEY, masked: segments[0]!.masked, segments }] });
   assert.ok(record);
   assert.equal(record!.count, 1);
@@ -87,9 +86,10 @@ test("an unmasked request with readable content is still recorded for observatio
 });
 
 test("record summaries omit originals, details are detached and truncation is explicit", () => {
+  const store = new RedactionStore();
   resetMaskRecordsForTest();
   const original = `${REAL_KEY} ${"普通正文".repeat(160000)} ${REAL_KEY}`;
-  const masked = maskText(original, on());
+  const masked = maskText(original, on(), store);
   const record = recordMask({ provider: "fixture", model: "fixture", segments: [{ path: "messages.0.content", original, masked: masked.text, segments: masked.segments }] })!;
   const detail = maskingDetail(record.id)!;
   detail.preview[0]!.original = "modified by caller";

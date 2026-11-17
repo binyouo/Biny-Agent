@@ -78,13 +78,16 @@ export interface ToolCatalogDefinition extends ToolDefinition {
 
 export class ToolRegistry {
   private readonly tools = new Map<string, RegisteredTool>();
+  private readonly registrations = new WeakSet<RegisteredTool>();
 
   register(tool: Tool, source: ToolSource = "builtin"): void {
     // source 只记录注册来源；权限、session 和调度仍由统一 coordinator 处理。
     if (this.tools.has(tool.name)) {
       throw new Error(`Tool already registered: ${tool.name}`);
     }
-    this.tools.set(tool.name, Object.freeze({ source, tool }));
+    const entry = Object.freeze({ source, tool });
+    this.tools.set(tool.name, entry);
+    this.registrations.add(entry);
   }
 
   /** Host assembly only. Plugin/MCP/user registration never calls this route. */
@@ -121,6 +124,8 @@ export class ToolRegistry {
 
   /** MCP tools/list_changed 之类的动态刷新需要先移除旧注册；对进行中的调用无影响。 */
   unregister(name: string): boolean {
+    const entry = this.tools.get(name);
+    if (entry) this.registrations.delete(entry);
     return this.tools.delete(name);
   }
 
@@ -155,6 +160,11 @@ export class ToolRegistry {
       exposure: getToolExposure(tool),
       namespace: tool.namespace
     }));
+  }
+
+  /** Registration identity changes even when the same tool object is registered again. */
+  hasRegistration(entry: RegisteredTool): boolean {
+    return this.registrations.has(entry);
   }
 
   listEntries(): RegisteredTool[] {

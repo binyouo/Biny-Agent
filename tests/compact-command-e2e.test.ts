@@ -38,7 +38,8 @@ try {
     provider: "compact-test", modelId: "test-model",
     stream: async (context, options) => {
       const isSummary = context.systemPrompt?.includes("durable context checkpoint") === true;
-      const text = isSummary ? checkpoint(invalidSummary) : "Recorded the request.";
+      const source = JSON.stringify(context.messages).match(/\[source (m\d+) kind=message role=user\]/u)?.[1] ?? "m0";
+      const text = isSummary ? checkpoint(invalidSummary, source) : "Recorded the request.";
       return (async function* (): AsyncGenerator<ModelStreamEvent> {
         options?.signal?.throwIfAborted();
         yield { type: "start" };
@@ -77,7 +78,7 @@ try {
   events.length = 0;
   const result = await executeRuntimeCommand(runtime, services, "/compact", "desktop");
   assert.deepEqual(result?.compaction, { outcome: "compacted" });
-  assert.match(result?.content ?? "", /Compacted 2 messages/u);
+  assert.match(result?.content ?? "", /Compacted 5 messages/u); // 用户、回答以及工作区、日期、工具说明快照。
   const replay = await replaySession(recorder.filePath);
   assert.equal(replay.messages.length, 0);
   assert.equal(replay.messageTree.length, 2);
@@ -99,8 +100,8 @@ try {
   await rm(root, { recursive: true, force: true });
 }
 
-function checkpoint(invalid: boolean): string {
-  const citation = invalid ? "" : " <!-- evidence:m0 -->";
+function checkpoint(invalid: boolean, source: string): string {
+  const citation = invalid ? "" : ` <!-- evidence:${source} -->`;
   return [
     "## Goal", `- Keep the unfinished task and verified sources.${citation}`,
     "## Constraints & Preferences", "- (none recorded)",

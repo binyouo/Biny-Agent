@@ -8,6 +8,7 @@ import path from "node:path";
 import { z } from "zod";
 import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
+import { vercelAgentLoopContinue } from "../src/agent/core/vercelAgentLoop.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { readSessionEvents } from "../src/session/events.js";
@@ -110,14 +111,37 @@ try {
     );
     try {
       const eligible = mode !== "hidden" && mode !== "codemode";
-      assert.deepEqual(coordinator.createAgentTools().map((definition) => definition.name), eligible ? [entry.name] : []);
-      await coordinator.handleInvalidToolCall(entry.name, `raw_${mode}`, {});
-      assert.equal(calls, eligible ? 1 : 0, `${mode} must retain model exposure at the raw invocation boundary`);
+      const tools = coordinator.createAgentTools();
+      assert.deepEqual(tools.map((definition) => definition.name), eligible ? [entry.name] : []);
+      const model = testModel({
+        provider: "fixture", modelId: "tool-exposure",
+        async stream() {
+          return (async function* (): AsyncGenerator<ModelStreamEvent> {
+            yield { type: "tool-call", id: `raw_${mode}`, name: entry.name, arguments: {} };
+            yield { type: "finish", reason: "tool-calls" };
+          })();
+        }
+      });
+      const loopEvents = [];
+      for await (const event of vercelAgentLoopContinue(
+        { messages: [{ role: "user", content: "Run the fixture" }], tools },
+        { model, tools, maxSteps: 1, shouldStopAfterTurn: async () => true }
+      )) loopEvents.push(event);
+      assert.equal(calls, eligible ? 1 : 0, `${mode} must retain model exposure through the actual model loop`);
+      const turn = loopEvents.find(event => event.type === "turn_end");
+      assert.ok(turn?.type === "turn_end");
+      assert.equal(turn.toolResults.length, 1);
+      assert.equal(turn.toolResults[0]?.toolCallId, `raw_${mode}`);
+      assert.equal(turn.toolResults[0]?.isError, !eligible);
       await recorder.flush();
       const events = await readSessionEvents(recorder.filePath);
-      assert.ok(events.some((event) => event.type === "tool_call" && event.toolCallId === `raw_${mode}`));
-      assert.ok(events.some((event) => event.type === "tool_result" && event.toolCallId === `raw_${mode}` && event.executionStatus === (eligible ? "succeeded" : "failed")));
-      if (!eligible) assert.ok(!events.some((event) => event.type === "tool_execution" && event.state === "admitted"));
+      if (eligible) {
+        assert.ok(events.some((event) => event.type === "tool_call" && event.toolCallId === `raw_${mode}`));
+        assert.ok(events.some((event) => event.type === "tool_result" && event.toolCallId === `raw_${mode}` && event.executionStatus === "succeeded"));
+      } else {
+        assert.ok(!loopEvents.some(event => event.type === "tool_execution_start"));
+        assert.ok(!events.some((event) => event.type === "tool_execution" && event.state === "admitted"));
+      }
     } finally {
       await coordinator.waitForIdle();
       await recorder.close();
