@@ -98,7 +98,7 @@ test("cold worker continuation rejects changed verification definitions before d
     const task = tasks.create({ task: { prompt: "produce candidate", verification: contract } });
     const attempt = tasks.createAttempt(task.taskRunId);
     tasks.transition(task.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: { workerExecution: {
-      prompt: "produce candidate", beforeWorkspace: await captureTaskWorkspaceSnapshot(root, []),
+      workspaceSnapshotVersion: 2, prompt: "produce candidate", beforeWorkspace: await captureTaskWorkspaceSnapshot(root, []),
       definitionFingerprint: await fingerprintTaskVerificationDefinitions(root, contract, [])
     } } });
     await writeFile(path.join(root, "check.txt"), "weakened acceptance");

@@ -48,7 +48,7 @@ test("prepareTurn injects the exact user-referenced filenames", async () => {
     for (const filePath of exactPaths) await writeFile(path.join(root, filePath), "");
     const memory = new ContextMemory(() => model, new WorkspaceContext(root, [], 32_768, path.join(root, "missing-global.md")), undefined, 8_000, 32_768);
     const prepared = await memory.prepareTurn(exactPaths.join(" "), "system", undefined, [], false);
-    const explicitPaths = prepared.systemPrompt?.match(/Explicit paths mentioned by the task:\n([\s\S]*?)(?=\n\n|$)/u)?.[1];
+    const explicitPaths = String(prepared.messages.find(message => message.role === "user" && message.runtimeContext === "workspace")?.content ?? "").match(/Explicit paths mentioned by the task:\n([\s\S]*?)(?=\n\n|$)/u)?.[1];
     assert.equal(explicitPaths, exactPaths.map((filePath) => `- ${filePath}`).join("\n"));
   } finally {
     await rm(root, { recursive: true, force: true });

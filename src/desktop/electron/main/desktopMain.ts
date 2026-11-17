@@ -350,6 +350,7 @@ async function startDesktopApplication(): Promise<void> {
       themePreference: appearance.snapshot().themePreference,
       chatResponse: (await configStore.load()).chat.response,
       fontPreference: appearance.snapshot().fontPreference,
+      quickChatSettings: state.quickChatSettings(),
     };
   };
 

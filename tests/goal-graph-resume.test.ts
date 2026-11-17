@@ -65,7 +65,6 @@ async function testResumeCheckpoint(checkpoint: SupervisorCheckpoint, finishWhil
     graphs = await GoalGraphStore.open(root, authority);
     taskRuns = await DurableTaskRunStore.open(root, authority);
     const resumed = graphs.resumeGraph(graph.graphId);
-    graphs.createWake(graph.graphId, "graph_resumed");
     assert.equal(resumed.status, "running");
     assert.deepEqual(resumed.nodes, paused.nodes, "resuming preserves node outcomes, dependencies, and evidence");
     assert.deepEqual(graphs.readyNodes(graph.graphId), [], "the checkpoint has no dispatchable worker");

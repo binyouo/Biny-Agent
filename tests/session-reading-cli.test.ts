@@ -4,7 +4,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createSessionFile, duplicateSessionFile, ensureAgentDirs } from "../src/session/store.js";
+import { createSessionFile, ensureAgentDirs } from "../src/session/store.js";
 import { updateSessionCatalogMetadata } from "../src/session/catalog.js";
 
 const cli = path.resolve("src/cli/index.ts");
@@ -22,7 +22,8 @@ test("session CLI reads pages, discovers titled conversations and totals recorde
         pricingKnown: true, costUsd: 0.002, time: "2026-01-01T00:00:01.000Z"
       } }
     ];
-    await createSessionFile(root, "original", Buffer.from(events.map((event, index) => JSON.stringify({ ...event, runtime: { eventId: `reading-fixture-${index}`, eventSeq: index + 1 } })).join("\n") + "\n"));
+    const original = Buffer.from(events.map((event, index) => JSON.stringify({ ...event, runtime: { eventId: `reading-fixture-${index}`, eventSeq: index + 1 } })).join("\n") + "\n");
+    await createSessionFile(root, "original", original);
     await updateSessionCatalogMetadata(root, "original", { title: "Release checklist" });
     const page = await run(root, ["session", "messages", "original", "--limit", "1", "--json"]);
     assert.equal(page.code, 0, page.stderr);
@@ -38,7 +39,7 @@ test("session CLI reads pages, discovers titled conversations and totals recorde
     const bodySearch = await run(root, ["session", "search", "original question", "--json"]);
     assert.equal(bodySearch.code, 0, bodySearch.stderr);
     assert.equal(JSON.parse(bodySearch.stdout).items[0].id, "original");
-    await duplicateSessionFile(root, "original", "copy");
+    await createSessionFile(root, "copy", original);
     const usage = await run(root, ["usage", "--json"]);
     assert.equal(usage.code, 0, usage.stderr);
     assert.equal(JSON.parse(usage.stdout).summary.calls, 1);

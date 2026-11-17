@@ -15,11 +15,10 @@ export function SettingsVisionModel({ onNotify }: { onNotify(message: string): v
     if (mounted.current) setError(message);
     else onNotify(message);
   };
-  if (!snapshot) return null;
-  const models = snapshot.models.configured.filter(model => model.providerType !== "acp" && model.available !== false
-    && model.capabilities?.vision === true && snapshot.models.connections.some(connection => connection.providerAlias === model.provider && connection.enabled !== false));
-  const enabled = snapshot.models.visionModelEnabled ?? Boolean(snapshot.models.visionModel);
-  const disabled = saving || (saveState === "saving" && !modelSelectionSaving) || saveState === "rolling_back" || saveState === "recovery_required";
+  const models = snapshot?.models.configured.filter(model => model.providerType !== "acp" && model.available !== false
+    && model.capabilities?.vision === true && snapshot.models.connections.some(connection => connection.providerAlias === model.provider && connection.enabled !== false)) ?? [];
+  const enabled = snapshot?.models.visionModelEnabled ?? Boolean(snapshot?.models.visionModel);
+  const disabled = !snapshot || saving || (saveState === "saving" && !modelSelectionSaving) || saveState === "rolling_back" || saveState === "recovery_required";
   const save = (update: Pick<DesktopSettingsModelsInput, "visionModel" | "visionModelEnabled">): void => {
     if (pending.current) return;
     pending.current = true;
@@ -33,12 +32,12 @@ export function SettingsVisionModel({ onNotify }: { onNotify(message: string): v
     <div className="settings-preference-heading">
       <h3>视觉模型</h3>
       <input aria-label="启用视觉模型" aria-describedby="vision-model-description" aria-checked={enabled}
-        checked={enabled} className="settings-switch" disabled={disabled}
+        checked={enabled} className="settings-switch" disabled={disabled} aria-busy={!snapshot}
         onChange={event => save({ visionModelEnabled: event.currentTarget.checked })} role="switch" type="checkbox" />
     </div>
     <div className="settings-form-group">
       <p id="vision-model-description">开启后，主模型不支持图片输入时，由视觉模型识别图片并转成文字。主模型支持图片时直接处理。</p>
-      {enabled ? <SettingsModelPicker ariaLabel="视觉模型" groups={modelPickerGroups(models, snapshot.models.connections)}
+      {enabled && snapshot ? <SettingsModelPicker ariaLabel="视觉模型" groups={modelPickerGroups(models, snapshot.models.connections)}
         placeholder={snapshot.models.visionModel ? "所选模型不可用" : "选择模型…"}
         value={snapshot.models.visionModel} onChange={alias => save({ visionModel: { alias } })}
         disabled={disabled} /> : null}

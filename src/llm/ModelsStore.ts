@@ -185,24 +185,20 @@ export class FileModelsStore implements ModelsStore {
   }
 
   async read(providerId: string): Promise<ModelsStoreEntry | undefined> {
-    await this.migrateIfDefault();
     const data = await readStoreFile(this.filePath);
-    const entry = data.providers[providerId];
-    return entry ? structuredClone(entry) as ModelsStoreEntry : undefined;
+    return data.providers[providerId] as ModelsStoreEntry | undefined;
   }
 
   async readMany(providerIds: readonly string[]): Promise<Map<string, ModelsStoreEntry>> {
-    await this.migrateIfDefault();
     // 一个设置快照会读取所有 provider；批量读避免对同一文件重复 JSON.parse + Zod 校验。
     const data = await readStoreFile(this.filePath);
     return new Map(providerIds.flatMap((providerId) => {
       const entry = data.providers[providerId];
-      return entry ? [[providerId, structuredClone(entry) as ModelsStoreEntry] as const] : [];
+      return entry ? [[providerId, entry as ModelsStoreEntry] as const] : [];
     }));
   }
 
   async write(providerId: string, entry: ModelsStoreEntry): Promise<void> {
-    await this.migrateIfDefault();
     await this.serialize(async () => {
       await withStoreLock(this.filePath, async () => {
         const data = await readStoreFile(this.filePath);
@@ -213,7 +209,6 @@ export class FileModelsStore implements ModelsStore {
   }
 
   async delete(providerId: string): Promise<void> {
-    await this.migrateIfDefault();
     await this.serialize(async () => {
       await withStoreLock(this.filePath, async () => {
         const data = await readStoreFile(this.filePath);
@@ -227,9 +222,6 @@ export class FileModelsStore implements ModelsStore {
     const running = this.pending.then(operation, operation);
     this.pending = running.catch(() => undefined);
     await running;
-  }
-
-  private async migrateIfDefault(): Promise<void> {
   }
 }
 

@@ -164,6 +164,7 @@ export function QuickChatApp(): React.JSX.Element {
   const runtimeModelAliasRef = useRef<string | undefined>(undefined);
   const runtimeThinkingRef = useRef<ThinkingSelection>("off");
   const settingsRef = useRef<DesktopQuickChatSettings | undefined>(undefined);
+  const contextPreferenceRevisionRef = useRef(0);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -292,6 +293,13 @@ export function QuickChatApp(): React.JSX.Element {
         runtimeModelAliasRef.current = info.modelAlias;
         runtimeThinkingRef.current = info.thinking;
       }
+      // Another window may have disabled capture since this window bootstrapped.
+      // Recheck the committed preference, and never override a local opt-out
+      // made while the model switch or preference read was pending.
+      const committedSettings = contextAttached ? await window.biny.quickChatSettings() : undefined;
+      const attachContext = contextAttached
+        && committedSettings?.injectScreenContext === true
+        && settingsRef.current?.injectScreenContext === true;
       dispatch({
         type: "append-user",
         message: {
@@ -301,7 +309,7 @@ export function QuickChatApp(): React.JSX.Element {
           reasoning: "",
           reasoningStreaming: false,
           streaming: false,
-          withScreenContext: contextAttached
+          withScreenContext: attachContext
         }
       });
       setInput("");
@@ -313,7 +321,7 @@ export function QuickChatApp(): React.JSX.Element {
         undefined,
         undefined,
         undefined,
-        contextAttached ? context.promptContext : undefined
+        attachContext ? context.promptContext : undefined
       );
       if (pendingSendRef.current !== pending) return;
       sessionIdRef.current = receipt.sessionId;
@@ -347,15 +355,18 @@ export function QuickChatApp(): React.JSX.Element {
   const updateIncludeContext = useCallback(async (enabled: boolean): Promise<void> => {
     const current = settingsRef.current;
     if (!current) return;
+    const revision = ++contextPreferenceRevisionRef.current;
     const next = { ...current, injectScreenContext: enabled };
     setSettings(next);
     settingsRef.current = next;
     try {
       await window.biny.setQuickChatSettings(next);
     } catch (settingsError) {
-      setSettings(current);
-      settingsRef.current = current;
-      setError(errorText(settingsError));
+      // Preserve the user's explicit choice (especially opt-out). An older
+      // failed write must not re-enable context after a newer disable.
+      if (contextPreferenceRevisionRef.current === revision) {
+        setError(`${errorText(settingsError)}。保存尚未确认，当前选择仅在本窗口保留。`);
+      }
     }
   }, []);
 

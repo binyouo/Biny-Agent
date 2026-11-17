@@ -30,8 +30,12 @@ export function createSubagentTimelineProjector(): { update(inspection: TaskInsp
         const entry = activity[index]!;
         const time = entry.createdAt;
         if (entry.kind === "tool_call" && entry.tool) events.push({ type: "tool_call", tool: entry.tool, toolCallId: entry.toolCallId ?? entry.id, args: entry.args, time });
-        if (entry.kind === "tool_result" && entry.tool) events.push({ type: "tool_result", tool: entry.tool, toolCallId: entry.toolCallId, result: entry.result,
+        if (entry.kind === "tool_result" && entry.tool) events.push({ type: "tool_result", tool: entry.tool, toolCallId: entry.toolCallId, result: entry.result, operationId: entry.operationId,
           executionStatus: entry.status === "succeeded" || entry.status === "failed" || entry.status === "cancelled" || entry.status === "unknown" ? entry.status : undefined, time });
+        if (entry.kind === "tool_execution" && entry.status === "side_effect_committed" && entry.tool && entry.toolCallId && entry.operationId && entry.change) {
+          events.push({ type: "tool_execution", tool: entry.tool, toolCallId: entry.toolCallId, operationId: entry.operationId,
+            sequence: entry.sequence, state: "side_effect_committed", change: entry.change, time });
+        }
         if (entry.kind === "assistant") {
           hasAssistant = true;
           if (entry.content) events.push({ type: "assistant_message", content: entry.content, time });

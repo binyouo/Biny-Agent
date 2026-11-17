@@ -48,7 +48,7 @@ async function appModule() {
     }
   }
   const actual = new Set(["react", "./app/desktopState.js", "./app/desktopApi.js", "./app/sessionTreePageLifetime.js", "./app/useSessionRootPages.js",
-    "./app/useDesktopEventBridge.js", "./navigationHistory.js", "../../../runtime/agentEvents.js",
+    "./app/useDesktopEventBridge.js", "../../../runtime/agentEvents.js",
     "./components/overlays/RenameOverlay.js", "../../../personalization/index.js"]);
   const implementations: Record<string, string> = {
     ChatResponseContext: "createContext(undefined)", RenderingPreviewContext: "createContext(undefined)",

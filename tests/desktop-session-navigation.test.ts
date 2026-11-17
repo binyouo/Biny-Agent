@@ -18,6 +18,7 @@ import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDa
 import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
 import { startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { SessionRecorder } from "../src/session/recorder.js";
+import { forkSession } from "../src/session/fork.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { sessionFilePath } from "../src/session/store.js";
 import { readDesktopSession } from "../src/desktop/renderer/src/app/desktopApi.js";
@@ -265,7 +266,7 @@ test("子代理收件事实不占用可编辑用户消息的序号", { timeout: 
   recorder.record({ type: "user_message", messageId: "human-two", content: "next human request" });
   await recorder.close();
   assert.equal(await projects.sessionUserMessageIdAtIndex(project, recorder.sessionId, 1), "human-two");
-  const fork = await projects.forkSessionAtUserMessage(project, recorder.sessionId, 1);
+  const { sessionId: fork } = await forkSession(dataRoot, recorder.sessionId, { upToEvent: 2 });
   const events = await readSessionEvents(sessionFilePath(dataRoot, fork));
   assert.ok(events.some((event) => event.type === "user_message" && event.content === "child evidence"));
   assert.ok(events.every((event) => event.type !== "user_message" || event.content !== "next human request"));

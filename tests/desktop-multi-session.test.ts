@@ -31,7 +31,7 @@ const provider = createServer(async (request, response) => {
   let body = "";
   for await (const chunk of request) body += String(chunk);
   const messages = (JSON.parse(body) as { messages: Array<{ role: string; content: unknown }> }).messages;
-  const marker = JSON.stringify(messages.filter((message) => message.role === "user").at(-1)?.content).match(/parallel-probe-[A-Z]/gu)?.at(-1);
+  const marker = JSON.stringify(messages.filter((message) => message.role === "user" && !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(message.content))).at(-1)?.content).match(/parallel-probe-[A-Z]/gu)?.at(-1);
   if (!marker) { response.writeHead(400); response.end("missing probe"); return; }
   if (responses.has(marker)) {
     response.writeHead(200, { "content-type": "application/json" });
