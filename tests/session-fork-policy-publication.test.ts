@@ -9,7 +9,7 @@ import { writeSessionCatalogRecord, readSessionCatalogRecord, sessionCatalogDire
 
 for (const code of ["EIO", "ENOSPC"]) {
   test(`fork must not publish private transcript before policy commit (${code})`, async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-fork-policy-"));
+    const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "biny-fork-policy-"));
     const prior = process.env.BINY_AGENT_DIR;
     process.env.BINY_AGENT_DIR = path.join(root, "agent");
     t.after(async () => { t.mock.restoreAll(); if (prior === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = prior; await fs.rm(root, { recursive: true, force: true }); });
@@ -37,7 +37,7 @@ for (const mode of ["fork", "desktop"] as const) {
   for (const failure of ["policy", "metadata", "transcript", "none"] as const) {
     if (mode === "fork" && failure === "metadata") continue;
     test(`${mode} publication preserves opt-out ordering under ${failure} failure`, async (t) => {
-      const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-fork-publication-"));
+      const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "biny-fork-publication-"));
       const prior = process.env.BINY_AGENT_DIR;
       process.env.BINY_AGENT_DIR = path.join(root, "agent");
       const { refreshSessionIndex } = await import("../src/session/catalog.js");
