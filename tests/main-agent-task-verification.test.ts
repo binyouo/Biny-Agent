@@ -28,12 +28,12 @@ async function main(): Promise<void> {
   const seenRootTools = new Set<string>();
   globalThis.fetch = (async (_input, init): Promise<Response> => {
     const body = JSON.parse(String(init?.body ?? "{}")) as {
-      messages?: Array<{ role?: string; content?: unknown }>;
+      messages?: Array<{ role?: string; content?: unknown; tool_call_id?: string }>;
       tools?: Array<{ name?: string; parameters?: JsonSchema; function?: { name?: string; parameters?: JsonSchema } }>;
     };
     const messages = body.messages ?? [];
     const system = textContent(messages[0]?.content);
-    const last = messages.at(-1);
+    const last = messages.filter(message => message.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(textContent(message.content))).at(-1);
     const lastText = textContent(last?.content);
     const availableToolNames = new Set((body.tools ?? []).flatMap((tool) => {
       const name = tool.name ?? tool.function?.name;
@@ -52,15 +52,23 @@ async function main(): Promise<void> {
         ? streamToolCall("worker-write", "Write", { path: "artifact.txt", content: "good\n" })
         : streamText("candidate ready");
     }
-    for (const tool of body.tools ?? []) {
-      const name = tool.name ?? tool.function?.name;
-      if (name) seenRootTools.add(name);
+    const deferred = new Map<string, JsonSchema>();
+    if (availableToolNames.has("ToolCall")) {
+      for (const message of messages) {
+        if (message.role !== "tool" || !["discover-verified-task", "discover-task-status"].includes(message.tool_call_id ?? "")) continue;
+        const result = JSON.parse(textContent(message.content)) as { deferredTools?: Array<{ name: string; parameters: JsonSchema }> };
+        for (const definition of result.deferredTools ?? []) deferred.set(definition.name, definition.parameters);
+      }
     }
+    for (const name of [...availableToolNames, ...deferred.keys()]) seenRootTools.add(name);
+    const canCall = (name: string) => availableToolNames.has(name) || deferred.has(name);
+    const call = (id: string, name: string, args: Record<string, unknown>) => availableToolNames.has(name)
+      ? streamToolCall(id, name, args) : streamToolCall(id, "ToolCall", { name, arguments: args });
     const serializedMessages = JSON.stringify(messages);
-    if (phase === "initial" && !availableToolNames.has("Task")) {
+    if (phase === "initial" && !canCall("Task")) {
       return streamToolCall("discover-verified-task", "ToolSearch", { query: "Task" });
     }
-    if (phase === "initial" && rootTaskRequests === 0 && availableToolNames.has("Task")) {
+    if (phase === "initial" && rootTaskRequests === 0 && canCall("Task")) {
       rootTaskRequests += 1;
       const args = {
         task: "修复 artifact.txt，使原测试通过。",
@@ -74,17 +82,17 @@ async function main(): Promise<void> {
         }
       };
       const taskTool = body.tools?.find((tool) => (tool.name ?? tool.function?.name) === "Task");
-      const parameters = taskTool?.parameters ?? taskTool?.function?.parameters;
+      const parameters = taskTool?.parameters ?? taskTool?.function?.parameters ?? deferred.get("Task");
       assert.ok(parameters, JSON.stringify(body.tools));
       assert.deepEqual(validateJsonSchema(parameters, args), { ok: true, errors: [] });
-      return streamToolCall("verified-task", "Task", args);
+      return call("verified-task", "Task", args);
     }
-    if (phase === "status" && !availableToolNames.has("TaskStatus")) {
+    if (phase === "status" && !canCall("TaskStatus")) {
       return streamToolCall("discover-task-status", "ToolSearch", { query: "TaskStatus" });
     }
-    if (phase === "status" && rootStatusRequests === 0 && availableToolNames.has("TaskStatus")) {
+    if (phase === "status" && rootStatusRequests === 0 && canCall("TaskStatus")) {
       rootStatusRequests += 1;
-      return streamToolCall("verified-task-status", "TaskStatus", { taskRunId });
+      return call("verified-task-status", "TaskStatus", { taskRunId });
     }
     if (phase === "direct" && last?.role === "tool") return streamText("candidate ready");
     if (phase === "direct" && availableToolNames.has("Bash")) {
