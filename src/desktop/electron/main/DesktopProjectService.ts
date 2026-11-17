@@ -9,7 +9,7 @@ import { refreshToolOptimizationSnapshot } from "../../../session/toolOptimizati
  * 所有工作区路径都经过 `resolveWorkspacePath` / `resolveWorkspaceDirectory` 收敛，渲染层传来的
  * 相对路径不能逃出项目目录。
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -745,8 +745,26 @@ export class DesktopProjectService {
 
   /** 把导出内容写到用户在保存对话框里选定的路径，权限按 0600（含完整对话）。 */
   async writeSessionExport(filePath: string, exported: ExportedSessionFile): Promise<void> {
-    await fs.writeFile(filePath, exported.content, { encoding: "utf8", mode: 0o600 });
-    await fs.chmod(filePath, 0o600);
+    // Never truncate the previous export or put private bytes into its possibly public inode.
+    // A same-directory rename publishes the complete, private file in one step.
+    const temporary = path.join(path.dirname(filePath), `.biny-export-${randomUUID()}.tmp`);
+    let created = false;
+    try {
+      const handle = await fs.open(temporary, "wx", 0o600);
+      created = true;
+      try {
+        // Restore the owner bits if a restrictive umask removed them at creation.
+        await handle.chmod(0o600);
+        await fs.writeFile(handle, exported.content, { encoding: "utf8" });
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.rename(temporary, filePath);
+      created = false;
+    } finally {
+      if (created) await fs.unlink(temporary).catch(() => undefined);
+    }
   }
 
   /** 从外部文件导入一条新会话，返回新建会话 id；选中它由 DesktopAgentManager 负责。 */
