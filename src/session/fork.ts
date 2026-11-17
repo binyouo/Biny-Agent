@@ -85,11 +85,15 @@ export async function forkSession(
   const kept = rebaseForkedSessionEvents(events.slice(0, cut));
   const bytes = Buffer.from(`${kept.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
   const sessionId = createSessionId();
-  const filePath = await createSessionFile(persistenceRoot, sessionId, bytes);
-  await registerSessionBranch(persistenceRoot, {
-    sessionId,
-    parentSessionId: sessionIdFromFile(sourcePath),
-    branchPoint: { kind: "event", index: kept.length }
+  const filePath = await createSessionFile(persistenceRoot, sessionId, bytes, {
+    // An inherited memory opt-out must exist before any copied history is visible.
+    beforeWrite: async () => {
+      await registerSessionBranch(persistenceRoot, {
+        sessionId,
+        parentSessionId: sessionIdFromFile(sourcePath),
+        branchPoint: { kind: "event", index: kept.length }
+      });
+    }
   });
   return { sessionId, filePath, sourceSessionId: sessionIdFromFile(sourcePath), events: kept.length };
 }
