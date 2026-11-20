@@ -21,6 +21,7 @@ import { DesktopSettingsTransaction } from "../src/desktop/electron/main/Desktop
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 import { readSessionEvents } from "../src/session/events.js";
+import { updateSessionCatalogMetadata } from "../src/session/catalog.js";
 import { localIpcEndpoint } from "../src/utils/localIpc.js";
 
 function deferred<T>() {
@@ -37,6 +38,7 @@ function send(delta: Record<string, unknown>, finishReason: string): Response {
 }
 const titleRelease = deferred<void>();
 const titlePublished = deferred<void>();
+let sawTitleEvent = false;
 const submissions: Array<Record<string, unknown>> = [];
 class MemorySocket extends EventEmitter {
   destroyed = false; writableLength = 0; peer!: MemorySocket;
@@ -45,7 +47,7 @@ class MemorySocket extends EventEmitter {
     for (const line of data.trim().split("\n")) {
       const frame = JSON.parse(line);
       if (frame.kind === "request" && frame.operation === "run.submit") submissions.push(frame.payload);
-      if (frame.kind === "event" && frame.update.event?.type === "session.title") titlePublished.resolve();
+      if (frame.kind === "event" && frame.update.event?.type === "session.title") { sawTitleEvent = true; titlePublished.resolve(); }
       if (frame.kind === "request" && frame.operation === "run.submit" && frame.payload.input === "Discover again") {
         titleRelease.resolve();
         void titlePublished.promise.then(() => setImmediate(() => { if (!this.peer.destroyed) this.peer.emit("data", data); })); return true;
@@ -131,7 +133,7 @@ test("next model-selection turn survives a real background-title revision race",
   let host: RuntimeHostServer | undefined;
   const completed = new Map<string, string>();
   let notifyCompleted = deferred<void>();
-  const timer = setTimeout(() => f.releaseFirst.resolve(), 20_000);
+  const timer = setTimeout(() => { f.releaseFirst.resolve(); titleRelease.resolve(); titlePublished.resolve(); }, 20_000);
   try {
     const storage = new DesktopUserDataStore(path.join(f.root, "desktop"));
     await storage.initialize();
@@ -193,10 +195,14 @@ test("next model-selection turn survives a real background-title revision race",
     assert.deepEqual(f.mainModels, ["chat-old", "chat-old", "chat-old"]);
     assert.ok(f.auxiliaryModels.length > 0);
     assert.ok(f.auxiliaryModels.every((model) => model === "aux-old"), "运行中变更不影响当前回合内后续工具筛选");
+    // Create the catalog record before releasing the title request so this test
+    // controls the title revision race rather than a concurrent record creation.
+    await updateSessionCatalogMetadata(persistenceRoot, first.sessionId, { pinned: false });
     notifyCompleted = deferred<void>();
     const next = await agents.sendPrompt(project.id, first.sessionId, "Discover again", [], undefined, undefined, undefined, undefined, selection);
     if (!completed.has(next.runId)) await notifyCompleted.promise;
     assert.equal(completed.get(next.runId), "run.completed");
+    assert.equal(sawTitleEvent, true, "the title event must precede the second admission");
     assert.equal(submissions.length, 3, "first turn is admitted once; second turn has one explicit rejection and one admission");
     assert.equal(submissions[1]!.expectedRevision, 21);
     assert.equal(submissions[2]!.expectedRevision, 22);
@@ -212,6 +218,8 @@ test("next model-selection turn survives a real background-title revision race",
   } finally {
     clearTimeout(timer);
     f.releaseFirst.resolve();
+    titleRelease.resolve();
+    titlePublished.resolve();
     try {
       await agents?.closeAll();
     } finally {
