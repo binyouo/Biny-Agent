@@ -186,7 +186,7 @@ async function fixture(t: TestContext) {
   };
   document.getElementById("outside")!.focus();
   await render();
-  assert.deepEqual(scans.map(scan => scan.projectId), ["a"]);
+  assert.deepEqual(scans, [], "opening the palette must not scan files");
   return {
     scans, files, projectSelections, sessionSelections, render, input, type, resolve, choose,
     fileOptions, assertNoStaleSelection, storage: window.localStorage,
@@ -205,10 +205,11 @@ test("workspace search rejects a late index result after the selected project ch
   const h = await fixture(t);
   await h.type("shared");
   await h.render("b");
-  assert.deepEqual(h.scans.map(scan => scan.projectId), ["a", "b"]);
+  assert.deepEqual(h.scans.map(scan => scan.projectId), ["a"]);
   await h.resolve(0, index("a/shared.txt"));
   await h.assertNoStaleSelection();
   await h.type("shared");
+  assert.deepEqual(h.scans.map(scan => scan.projectId), ["a", "b"]);
   await h.resolve(1, index("b/shared.txt"));
   await h.choose("file:b:b/shared.txt");
   assert.deepEqual(h.files, [{ projectId: "b", path: "b/shared.txt" }]);
@@ -216,14 +217,14 @@ test("workspace search rejects a late index result after the selected project ch
 
 test("workspace search retires already displayed file results when the project changes", async t => {
   const h = await fixture(t);
-  await h.resolve(0, index("a/shared.txt"));
   await h.type("shared");
+  await h.resolve(0, index("a/shared.txt"));
   assert.deepEqual(h.fileOptions().map(item => item.dataset.value), ["file:a:a/shared.txt"]);
   await h.render("b");
   await h.assertNoStaleSelection();
   assert.equal(h.input().value, "");
-  await h.resolve(1, index("b/shared.txt"));
   await h.type("shared");
+  await h.resolve(1, index("b/shared.txt"));
   await h.choose("file:b:b/shared.txt");
   assert.deepEqual(h.files, [{ projectId: "b", path: "b/shared.txt" }]);
 });
@@ -232,18 +233,19 @@ test("returning to the same workspace does not revive its previous search lifeti
   const h = await fixture(t);
   await h.type("shared");
   await h.render("b");
+  await h.type("shared");
   await h.render("a");
-  assert.deepEqual(h.scans.map(scan => scan.projectId), ["a", "b", "a"]);
   await h.resolve(0, index("old/shared.txt"));
   await h.resolve(1, index("b/shared.txt"));
   await h.assertNoStaleSelection();
   await h.type("shared");
+  assert.deepEqual(h.scans.map(scan => scan.projectId), ["a", "b", "a"]);
   await h.resolve(2, index("new/shared.txt"));
   await h.choose("file:a:new/shared.txt");
   assert.deepEqual(h.files, [{ projectId: "a", path: "new/shared.txt" }]);
 });
 
-test("closing and reopening search discards a pending previous scan", async t => {
+test("reopening reuses the same-project file index and clears the old query", async t => {
   const h = await fixture(t);
   await h.frame();
   await h.type("shared");
@@ -252,13 +254,12 @@ test("closing and reopening search discards a pending previous scan", async t =>
   await h.resolve(0, index("old/shared.txt"));
   assert.deepEqual(h.files, []);
   await h.render("a");
-  assert.deepEqual(h.scans.map(scan => scan.projectId), ["a", "a"]);
   assert.equal(h.input().value, "");
   await h.type("shared");
-  await h.resolve(1, index("new/shared.txt"));
-  assert.deepEqual(h.fileOptions().map(item => item.dataset.value), ["file:a:new/shared.txt"]);
-  await h.choose("file:a:new/shared.txt");
-  assert.deepEqual(h.files, [{ projectId: "a", path: "new/shared.txt" }]);
+  assert.deepEqual(h.scans.map(scan => scan.projectId), ["a"]);
+  assert.deepEqual(h.fileOptions().map(item => item.dataset.value), ["file:a:old/shared.txt"]);
+  await h.choose("file:a:old/shared.txt");
+  assert.deepEqual(h.files, [{ projectId: "a", path: "old/shared.txt" }]);
   assert.equal(h.activeElementId(), "outside", "Selection must return focus to the opener");
 });
 
@@ -289,14 +290,15 @@ test("same-project query supersession and ordinary source refresh keep the lates
 
 test("a failed file scan preserves project and session search navigation", async t => {
   const h = await fixture(t);
+  await h.type("Conversation b");
   h.scans[0]!.gate.reject(new Error("Synthetic scan failure"));
   await h.type("Conversation b");
   await h.choose("session:b:session-b");
   assert.deepEqual(h.sessionSelections, [["b", "session-b"]]);
   assert.deepEqual(h.files, []);
   await h.render("a");
-  await h.resolve(1, index());
   await h.type("Project b");
+  await h.resolve(h.scans.length - 1, index());
   await h.choose("project:b");
   assert.deepEqual(h.projectSelections, ["b"]);
 });

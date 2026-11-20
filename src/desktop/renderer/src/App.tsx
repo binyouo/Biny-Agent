@@ -16,7 +16,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type { ContextBudgetStatus } from "../../../agent/context/types.js";
 import type { PermissionResult } from "../../../permission/PermissionManager.js";
-import { defaultChatPersonalizationOverride, resolveChatPersonalization } from "../../../personalization/index.js";
+import { defaultChatPersonalizationOverride, formatPersonalizationState, memoryPolicyPatch, mergeChatPersonalizationOverride,
+  resolveChatPersonalization } from "../../../personalization/index.js";
 import { activeRun, pendingPermission } from "../../../runtime/agentEvents.js";
 import type {
   DesktopActiveView,
@@ -191,7 +192,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const [pendingPreviewBrowser, setPendingPreviewBrowser] = useState<{ projectId: string; sessionId?: string; request: number }>();
   const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
   const [contextBudget, setContextBudget] = useState<ContextBudgetStatus>();
-  const [draftMemoryOverride, setDraftMemoryOverride] = useState<boolean>();
+  const [draftMemoryOverride, setDraftMemoryOverride] = useState<DesktopChatPersonalizationOverride>();
   const [memoryToggleBusy, setMemoryToggleBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<RenameTarget>();
   const [slashResult, setSlashResult] = useState<DesktopSlashResult>();
@@ -708,8 +709,18 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     }
     try {
       if (target.sessionId === undefined) {
-        const snapshot = await window.biny.startDraft(target.projectId, isolation);
+        const snapshot = startingCurrentDraft && isolation !== "worktree"
+          ? await window.biny.startDraft(target.projectId, isolation, true)
+          : await window.biny.startDraft(target.projectId, isolation);
         if (loadRequestRef.current !== request || projectRemovalRef.current.get(target.projectId) !== projectLifetime) return false;
+        if (snapshot === undefined) {
+          setDraftProjectId(undefined);
+          setComposerDraft(undefined);
+          setWorkspace(current => current?.project.id === target.projectId ? { ...current, runtime: undefined, runtimeError: undefined } : current);
+          void window.biny.commitSelection(target.projectId, undefined, "chat").catch((error) => setWarning(errorMessage(error)));
+          setFocusToken((value) => value + 1);
+          return true;
+        }
         const adopted = await adoptWorkspace(snapshot, undefined, request);
         if (adopted) setFocusToken((value) => value + 1);
         return adopted;
@@ -905,11 +916,12 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     if (selectedRef.current === undefined) {
       // 回填已进入所属草稿；目标切换时不能再次覆盖另一项目保留的输入。
       setComposerDraft(undefined);
+      if ((draftProjectId ?? projectRef.current) !== projectId) setDraftMemoryOverride(undefined);
       setDraftProjectId(projectId === projectRef.current ? undefined : projectId);
       return;
     }
     void selectProject(projectId);
-  }, [selectProject]);
+  }, [draftProjectId, selectProject]);
 
   const switchProjectBranch = useCallback(async (projectId: string, branchName: string): Promise<void> => {
     try {
@@ -1217,10 +1229,6 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const isCurrent = (): boolean => loadRequestRef.current === navigationRequest
       && projectRemovalRef.current.get(projectId) === projectLifetime;
     const previousSessionId = selectedRef.current;
-    const draftPersonalization: DesktopChatPersonalizationOverride = {
-      useMemories: draftMemoryOverride ?? "inherit",
-      contributeMemories: draftMemoryOverride ?? "inherit"
-    };
     setComposerDraft(undefined);
     const receipt = await window.biny.sendPrompt(
       projectId,
@@ -1228,7 +1236,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       input,
       attachments,
       delivery,
-      previousSessionId === undefined && draftMemoryOverride !== undefined ? draftPersonalization : undefined,
+      previousSessionId === undefined ? draftMemoryOverride : undefined,
       idempotencyKey,
       undefined,
       capabilitySelection,
@@ -1355,12 +1363,24 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   const runSlashCommand = useCallback(async (command: string): Promise<void> => {
     const projectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
     if (!projectId) throw new Error("请先打开一个项目。");
-    if (command.trim().split(/\s+/, 1)[0] === "/compact") {
+    const [name, action] = command.trim().split(/\s+/u);
+    if (name === "/compact") {
       setSlashResult(undefined);
       await runCompaction(projectId, selectedRef.current, command);
       return;
     }
     const previousSessionId = selectedRef.current;
+    if (name === "/memories" && previousSessionId === undefined) {
+      const memory = workspace?.memory;
+      if (!memory) throw new Error("当前记忆策略尚未载入。");
+      const patch = memoryPolicyPatch(action);
+      const current = draftMemoryOverride ?? defaultChatPersonalizationOverride;
+      const override = patch ? mergeChatPersonalizationOverride(current, patch) : current;
+      if (patch) setDraftMemoryOverride(override);
+      const content = formatPersonalizationState({ override, resolved: resolveChatPersonalization(memory, override) });
+      setSlashResult({ command: name, title: "Memories", content });
+      return;
+    }
     const navigationRequest = loadRequestRef.current;
     const projectLifetime = projectRemovalRef.current.get(projectId);
     const isCurrent = (): boolean => loadRequestRef.current === navigationRequest
@@ -1369,6 +1389,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     try {
       const result = await window.biny.runSlashCommand(projectId, previousSessionId, command);
       if (!isCurrent()) return;
+      if (result.chatMetadata) mergeSessionMetadata(result.chatMetadata.receipt, result.chatMetadata.previousRevision);
       if (result.sessionGoal) {
         if (previousSessionId === undefined && result.sessionId !== undefined) {
           const snapshot = await window.biny.refreshProject(projectId);
@@ -1388,7 +1409,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       if (!isCurrent()) return;
       throw error;
     }
-  }, [draftProjectId, refreshPlans, openSession, runCompaction]);
+  }, [draftMemoryOverride, draftProjectId, mergeSessionMetadata, refreshPlans, openSession, runCompaction, workspace?.memory]);
 
   const editPrompt = useCallback(async (
     input: string,
@@ -1953,13 +1974,13 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
   );
   // 记忆开关只消费 workspace 的只读策略投影；真正的记忆概览和召回在发送回合内由 Runtime 完成。
   const memoryPolicy = workspace?.memory;
-  const currentChatPersonalization = selectedSession?.personalization ?? defaultChatPersonalizationOverride;
+  const currentChatPersonalization = draftMemoryOverride ?? selectedSession?.personalization ?? defaultChatPersonalizationOverride;
   const resolvedPersonalization = memoryPolicy === undefined
     ? undefined
     : resolveChatPersonalization(memoryPolicy, currentChatPersonalization);
   const globalMemoryEnabled = resolvedPersonalization?.memoryEnabled === true;
   const confirmedChatMemoryEnabled = resolvedPersonalization?.useMemories === true;
-  const chatMemoryEnabled = globalMemoryEnabled && (draftMemoryOverride ?? confirmedChatMemoryEnabled);
+  const chatMemoryEnabled = globalMemoryEnabled && confirmedChatMemoryEnabled;
   const memoryState: ComposerMemoryState = resolvedPersonalization === undefined
     ? "unknown"
     : chatMemoryEnabled ? "enabled" : "disabled";
@@ -1985,8 +2006,8 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const current = selectedSession?.personalization ?? defaultChatPersonalizationOverride;
     if (!projectId || !memoryPolicy || !memoryPolicy.enabled || memoryToggleBusy) return;
     if (!sessionId) {
-      const enabled = !(draftMemoryOverride ?? memoryPolicy.useMemories);
-      setDraftMemoryOverride(enabled);
+      const enabled = !chatMemoryEnabled;
+      setDraftMemoryOverride({ useMemories: enabled, contributeMemories: enabled });
       setToast(enabled ? "当前新聊天已开启记忆" : "当前新聊天已关闭记忆");
       return;
     }
@@ -2002,14 +2023,10 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     const isCurrentRequest = (): boolean => projectRef.current === requestProjectId
       && selectedRef.current === requestSessionId
       && memoryToggleRequestRef.current === requestId;
-    setDraftMemoryOverride(enabled);
+    const nextOverride = { ...current, useMemories: enabled, contributeMemories: enabled };
+    setDraftMemoryOverride(nextOverride);
     setMemoryToggleBusy(true);
     try {
-      const nextOverride = {
-        ...current,
-        useMemories: enabled,
-        contributeMemories: enabled
-      };
       const receipt = await window.biny.saveChatPersonalization(projectId, sessionId, nextOverride, selectedSession.metadataRevision);
       if (!isCurrentRequest()) return;
       mergeSessionMetadata(receipt, selectedSession.metadataRevision);
@@ -2023,7 +2040,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     } finally {
       if (isCurrentRequest()) setMemoryToggleBusy(false);
     }
-  }, [chatMemoryEnabled, draftMemoryOverride, memoryPolicy, memoryToggleBusy, mergeSessionMetadata, selectedSession]);
+  }, [chatMemoryEnabled, memoryPolicy, memoryToggleBusy, mergeSessionMetadata, selectedSession]);
   const prefillComposer = useCallback((input: string): void => {
     setComposerDraft(input);
     setFocusToken((value) => value + 1);
@@ -2038,8 +2055,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
     try {
       const result = await window.biny.referenceForMessage(projectId, sessionId, messageId);
       if (!isCurrentScope()) return;
-      const label = result.label.replace(/[\]\n\r]/gu, " ").slice(0, 80) || "消息";
-      composerRef.current?.appendText(`@[${label}](${result.uri})`);
+      composerRef.current?.appendReference(result);
     } catch (error) { if (isCurrentScope()) setWarning(errorMessage(error)); }
   }, []);
   const showMessageReferences = useCallback(async (messageId: string): Promise<void> => {
@@ -2205,6 +2221,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       key={`${composerProject?.id ?? "none"}:${selectedSessionId ?? "draft"}`}
       draftKey={`${composerProject?.id ?? "none"}:${selectedSessionId ?? "draft"}`}
       draftProjectId={composerProject?.id}
+      sessionId={selectedSessionId}
       isSubmissionCurrent={() => projectRef.current === workspace?.project.id && selectedRef.current === selectedSessionId}
       drafts={composerDrafts}
       onInspectReference={inspector.previewReference}
@@ -2228,7 +2245,7 @@ function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JS
       fastMode={composerFastMode}
       onChangeFastMode={(fastMode) => { void changeFastMode(fastMode); }}
       onSaveAttachment={saveAttachment}
-      onPrepare={async () => { if (workspace && !externalAgent) await window.biny.preparePrompt(workspace.project.id); }}
+      onPrepare={async () => { if (composerProject && !externalAgent) await window.biny.preparePrompt(composerProject.id); }}
       onSend={sendPromptWithTransition}
       recovery={!loading && document?.session.id === selectedSessionId ? document?.recovery : undefined}
       onResume={continueInterrupted}

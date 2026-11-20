@@ -12,6 +12,7 @@ import { DesktopSettingsTransaction } from "../src/desktop/electron/main/Desktop
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
 import { InMemoryModelsStore, modelCatalogCacheKey } from "../src/llm/ModelsStore.js";
+import type { RuntimeHostClient } from "../src/runtime/host/client.js";
 
 async function createFixture(fetcher?: typeof fetch) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-settings-model-isolation-"));
@@ -44,11 +45,34 @@ async function createFixture(fetcher?: typeof fetch) {
   const manager = new DesktopAgentManager(state, projects, store, () => {}, undefined, catalogs, fetcher ?? (async () => {
     throw new Error("Saving a model choice must not fetch remote catalogs");
   }));
-  return { root, manager, store, state, project, catalogs, async close() {
+  return { root, manager, store, state, project, projects, catalogs, async close() {
     await manager.closeAll();
     await rm(root, { recursive: true, force: true });
   } };
 }
+
+test("global memory changes reach existing project hosts without restarting either host's sessions", async context => {
+  const h = await createFixture();
+  try {
+    const second = await h.projects.createEmptyProject(path.join(h.root, "second"));
+    await h.manager.setPermissionMode(h.project.id, "read-only");
+    await h.manager.setPermissionMode(second.id, "read-only");
+    const internals = h.manager as unknown as { runtimes: Map<string, { runtime: RuntimeHostClient }>; idleRuntimeRebuildTail: Promise<void> };
+    const clients = [h.project.id, second.id].map(id => internals.runtimes.get(id)!.runtime);
+    const restarts = clients.map(client => context.mock.method(client, "restartRuntime", client.restartRuntime.bind(client)));
+    const originalIds = clients.map(client => client.getSnapshot().info.sessionId);
+    const settings = new DesktopSettingsTransaction(h.state, h.manager);
+    const before = await settings.snapshot(h.project.id);
+    const saved = await settings.save(h.project.id, { expectedPreferenceRevision: before.preferenceRevision,
+      expectedConfigRevision: before.configRevision, memory: { ...before.memory, enabled: true, useMemories: true } });
+    assert.equal(saved.status, "committed");
+    await internals.idleRuntimeRebuildTail;
+    assert.deepEqual(restarts.map(restart => restart.mock.callCount()), [0, 0]);
+    assert.deepEqual(clients.map(client => client.getSnapshot().info.sessionId), originalIds);
+    const updated = await Promise.all(clients.map(client => client.getPersonalizationState()));
+    assert.deepEqual(updated.map(state => state.resolved.useMemories), [true, true]);
+  } finally { await h.close(); }
+});
 
 test("combined settings preserve normalization and reject invalid candidates before persistence", async () => {
   const h = await createFixture();

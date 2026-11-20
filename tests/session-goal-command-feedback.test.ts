@@ -5,7 +5,7 @@ import React, { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { DesktopSlashResult } from "../src/desktop/protocol.js";
 import { ComposerDraftState } from "../src/desktop/renderer/src/components/composer/composerDraft.js";
-import { desktopGoalCommandAllowsNoModel } from "../src/desktop/renderer/src/components/composer/desktopSlashCommands.js";
+import { desktopCommandAllowsNoModel } from "../src/desktop/renderer/src/components/composer/desktopSlashCommands.js";
 import { sessionGoalSlashFeedback } from "../src/desktop/renderer/src/components/workspace/sessionGoalControl.js";
 
 const output = (sessionGoal: DesktopSlashResult["sessionGoal"]): DesktopSlashResult => ({
@@ -32,15 +32,15 @@ test("Goal 控制按实际状态提示，查询保留报告，过期响应无反
 
 test("Goal 查询、暂停和清除可在未配置模型时调用", () => {
   for (const input of ["/goal", "/goal show", " /goal\tSHOW\n", "/goal pause", "/goal clear"]) {
-    assert.equal(desktopGoalCommandAllowsNoModel(input), true, input);
+    assert.equal(desktopCommandAllowsNoModel(input), true, input);
   }
   for (const input of ["/goal finish the task", "/goal set finish", "/goal resume", "/goal show extra", "/goal pause workspace-id", "/GOAL", "ordinary message"]) {
-    assert.equal(desktopGoalCommandAllowsNoModel(input), false, input);
+    assert.equal(desktopCommandAllowsNoModel(input), false, input);
   }
 });
 
 // 静态渲染只检查公开按钮状态，不运行界面或触发键盘、点击。
-test("Composer 在无模型时只允许安全 Goal 控制提交", async () => {
+test("Composer 无模型时允许 Goal 状态操作与聊天记忆命令提交", async () => {
   const imports = registerHooks({ load(url, context, next) {
     if (/\.(svg|png)$/u.test(url)) return { format: "module", source: 'export default "asset";', shortCircuit: true };
     return url.endsWith(".css") ? { format: "module", source: "export {};", shortCircuit: true } : next(url, context);
@@ -64,7 +64,7 @@ test("Composer 在无模型时只允许安全 Goal 控制提交", async () => {
       onSaveAttachment: async () => { throw new Error("unused"); }, onWarning: () => undefined, onSubmitError: () => undefined
     }));
   }
-  for (const input of ["/goal", "/goal show", "/goal pause", "/goal clear"]) {
+  for (const input of ["/goal", "/goal show", "/goal pause", "/goal clear", "/memories", "/memories off"]) {
     const markup = composerMarkup(input);
     const send = markup.match(/<button[^>]*aria-label="发送消息"[^>]*>/u)?.[0];
     assert.ok(send, "the composer must expose the send action");

@@ -268,16 +268,16 @@ for (const failOlderRead of [false, true]) {
     const directory = sessionCatalogDirectory(f.dataRoot);
     const entered = deferred();
     const release = deferred();
-    const mkdir = fs.mkdir;
+    const chmod = fs.chmod;
     let holdFirst = true;
-    context.mock.method(fs, "mkdir", async (...args: Parameters<typeof fs.mkdir>) => {
+    context.mock.method(fs, "chmod", async (...args: Parameters<typeof fs.chmod>) => {
       if (args[0] === directory && holdFirst) {
         holdFirst = false;
         entered.resolve();
         await release.promise;
         if (failOlderRead) throw Object.assign(new Error("older read failed before lock admission"), { code: "EIO" });
       }
-      return await Reflect.apply(mkdir, fs, args);
+      return await Reflect.apply(chmod, fs, args);
     });
     try {
       await f.manager.openSession(f.project.id, f.sessionId);
@@ -306,16 +306,16 @@ test("a superseded read rejection preserves the newer opening revision for immed
   const directory = sessionCatalogDirectory(f.dataRoot);
   const entered = deferred();
   const release = deferred();
-  const mkdir = fs.mkdir;
+  const chmod = fs.chmod;
   let holdFirst = true;
-  context.mock.method(fs, "mkdir", async (...args: Parameters<typeof fs.mkdir>) => {
+  context.mock.method(fs, "chmod", async (...args: Parameters<typeof fs.chmod>) => {
     if (args[0] === directory && holdFirst) {
       holdFirst = false;
       entered.resolve();
       await release.promise;
       throw Object.assign(new Error("superseded read failed before lock admission"), { code: "EIO" });
     }
-    return await Reflect.apply(mkdir, fs, args);
+    return await Reflect.apply(chmod, fs, args);
   });
   try {
     await f.manager.openSession(f.project.id, f.sessionId);

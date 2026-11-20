@@ -62,8 +62,8 @@ test("Desktop isolated drafts use a worktree and ordinary new drafts return to t
   assert.equal((await manager.runtimeProjection(project.id)).worktrees.length, 1, "reuse an unsubmitted draft");
   assert.equal(repeated.runtime?.info.sessionId, isolated.runtime?.info.sessionId);
   const shared = await manager.startDraft(project.id);
-  assert.equal(shared.runtime?.info.workspaceRoot, project.path);
-  assert.notEqual(shared.runtime?.info.sessionId, isolated.runtime?.info.sessionId);
+  assert.deepEqual(Object.keys(shared.sessionRuntimes ?? {}), Object.keys(repeated.sessionRuntimes ?? {}),
+    "a blank shared draft waits for a send before provisioning its own runtime");
   assert.equal((await manager.runtimeProjection(project.id)).worktrees.length, 1, "a shared draft must not remove the isolated checkout");
 });
 

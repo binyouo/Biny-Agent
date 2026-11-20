@@ -313,7 +313,7 @@ async function startDesktopApplication(): Promise<void> {
   }));
   /** 渲染进程启动时拉取的一次性初始状态：项目列表、当前项目、布局尺寸等。 */
   const bootstrap = async (): Promise<DesktopBootstrap> => {
-    const allProjects = await projects.refreshAllProjects();
+    const allProjects = await projects.refreshAllProjects(false);
     let activeProjectId = state.activeProjectId();
     // 上次打开的项目可能已被删除或移走，此时回退到第一个可用项目。
     if (activeProjectId && !allProjects.some((project) => project.id === activeProjectId)) activeProjectId = undefined;

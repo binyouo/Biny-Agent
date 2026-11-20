@@ -31,6 +31,7 @@ export interface LocalReferenceResult {
   messageId?: string;
 }
 export interface LocalReferenceProject { id: string; path: string; name: string }
+export interface LocalReferenceSearchScope { sessionId?: string }
 
 const labels: Record<LocalReferenceKind, string> = {
   date: "日期", project: "项目", file: "文件", thread: "会话", message: "消息", memory: "记忆", snippet: "片段", scratch: "临时引用",
@@ -149,10 +150,10 @@ export class LocalReferenceService {
   private readonly root: string;
   private readonly projects: LocalReferenceProject[];
   private readonly loadConfig: (workspaceRoot: string) => Promise<AgentConfig>;
-  private readonly runtimeEntries?: (projectId: string) => Promise<Array<Pick<LocalReferenceResult, "kind" | "label" | "content"> & { id: string }>>;
+  private readonly runtimeEntries?: (projectId: string, kind?: LocalReferenceKind) => Promise<Array<Pick<LocalReferenceResult, "kind" | "label" | "content"> & { id: string }>>;
   constructor(options: { root?: string; projects: LocalReferenceProject[];
     loadConfig?: (workspaceRoot: string) => Promise<AgentConfig>;
-    runtimeEntries?: (projectId: string) => Promise<Array<Pick<LocalReferenceResult, "kind" | "label" | "content"> & { id: string }>> }) {
+    runtimeEntries?: (projectId: string, kind?: LocalReferenceKind) => Promise<Array<Pick<LocalReferenceResult, "kind" | "label" | "content"> & { id: string }>> }) {
     this.root = options.root ?? globalAgentDir();
     this.projects = options.projects;
     this.loadConfig = options.loadConfig ?? (async (workspaceRoot) => await createFileConfigStore(workspaceRoot).load());
@@ -167,7 +168,7 @@ export class LocalReferenceService {
     return project;
   }
 
-  private async sessionFiles(project: LocalReferenceProject): Promise<Array<{ id: string; file: string }>> {
+  private async sessionFiles(project: LocalReferenceProject, threadId?: string): Promise<Array<{ id: string; file: string }>> {
     const directory = projectSessionsDir(project.path, { env: { ...process.env, BINY_AGENT_DIR: this.root } });
     try {
       const stat = await lstat(directory);
@@ -189,6 +190,7 @@ export class LocalReferenceService {
           continue;
         }
         if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+        if (threadId !== undefined && entry.name !== `${threadId}.jsonl`) continue;
         if (await realpath(file) !== file || !(await lstat(file)).isFile()) continue;
         rows.push({ id: sessionIdFromFile(file), file });
       }
@@ -199,8 +201,7 @@ export class LocalReferenceService {
 
   private async sessions(project: LocalReferenceProject, threadId?: string): Promise<Array<{ id: string; events: SessionEvent[] }>> {
     const rows: Array<{ id: string; events: SessionEvent[] }> = [];
-    for (const { id, file } of await this.sessionFiles(project)) {
-      if (threadId !== undefined && id !== threadId) continue;
+    for (const { id, file } of await this.sessionFiles(project, threadId)) {
       const events: SessionEvent[] = [];
       for (const line of (await readFile(file, "utf8")).split("\n")) {
         if (!line.trim()) continue;
@@ -265,7 +266,7 @@ export class LocalReferenceService {
   }
 
   async search(query: string, projectId: string, kind?: LocalReferenceKind, limit = 30,
-    timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): Promise<LocalReferenceResult[]> {
+    timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone, scope?: LocalReferenceSearchScope): Promise<LocalReferenceResult[]> {
     const project = this.project(projectId);
     if (!Number.isInteger(limit) || limit < 1 || limit > 50 || query.length > 200) throw new Error("Invalid reference search.");
     const needle = query.trim().toLocaleLowerCase();
@@ -274,7 +275,7 @@ export class LocalReferenceService {
     let pinned: LocalReferenceResult[] = [];
     const pinGraph = new LocalReferenceGraph(this.root, this);
     try {
-      pinned = (await pinGraph.pins(projectId, limit)).filter((item) => (!kind || item.kind === kind) && matches(item.label));
+      pinned = (await pinGraph.pins(projectId, limit, kind, scope)).filter(item => matches(item.label));
       results.push(...pinned);
     }
     finally { pinGraph.close(); }
@@ -336,9 +337,12 @@ export class LocalReferenceService {
       let threadMatches = 0;
       let messageMatches = 0;
       let toolCallMatches = 0;
-      const sessions = kind === "thread"
+      const sessions = kind === "thread" || (scope && !kind)
         ? (await this.sessionFiles(project)).map((item) => ({ id: item.id, events: [] as SessionEvent[] }))
-        : await this.sessions(project);
+        : [];
+      if (kind !== "thread" && (!scope || scope.sessionId)) {
+        sessions.push(...await this.sessions(project, scope?.sessionId));
+      }
       for (const session of sessions) {
         if ((!kind || kind === "thread") && threadMatches < limit && matches(session.id)) {
           results.push({ kind: "thread", uri: localReferenceUri({ kind: "thread", id: session.id }),
@@ -375,14 +379,14 @@ export class LocalReferenceService {
       } } finally { store.close(); }
     }
     if (!kind || ["skill", "agent", "mcp", "model", "provider", "tool", "task", "cron", "plan"].includes(kind)) {
-      results.push(...(await this.existingEntries(projectId, kind)).filter((item) => matches(item.label) || matches(item.content)));
+      results.push(...(await this.existingEntries(projectId, kind, !scope || !!kind)).filter((item) => matches(item.label) || matches(item.content)));
     }
     if (!kind || kind === "snippet" || kind === "scratch") {
       const graph = new LocalReferenceGraph(this.root, this);
       try {
         for (const storedKind of ["snippet", "scratch"] as const) {
           if (kind && kind !== storedKind) continue;
-          results.push(...await graph.searchStored(needle, projectId, storedKind, limit));
+          results.push(...await graph.searchStored(needle, projectId, storedKind, limit, undefined, scope));
         }
       } finally { graph.close(); }
     }
@@ -426,7 +430,7 @@ export class LocalReferenceService {
     return message;
   }
 
-  private async existingEntries(projectId: string, kind?: LocalReferenceKind): Promise<LocalReferenceResult[]> {
+  private async existingEntries(projectId: string, kind?: LocalReferenceKind, includeRuntime = true): Promise<LocalReferenceResult[]> {
     const project = this.project(projectId);
     const result: LocalReferenceResult[] = [];
     const add = (entryKind: LocalReferenceKind, id: string, label: string, content: string): void => {
@@ -453,9 +457,9 @@ export class LocalReferenceService {
           `${definition.description}\n${definition.prompt}`);
       }
     }
-    if (this.runtimeEntries && (!kind || ["tool", "task", "cron", "plan"].includes(kind))) {
+    if (includeRuntime && this.runtimeEntries && (!kind || ["tool", "task", "cron", "plan"].includes(kind))) {
       let entries: Awaited<ReturnType<NonNullable<typeof this.runtimeEntries>>>;
-      try { entries = await this.runtimeEntries(projectId); }
+      try { entries = await this.runtimeEntries(projectId, kind); }
       catch (cause) {
         if (kind) throw cause;
         entries = [];

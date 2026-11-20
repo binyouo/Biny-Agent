@@ -46,17 +46,25 @@ export function findReferenceCompletion(value: string, start: number, end = star
   const tail = /^\S*/u.exec(value.slice(start))?.[0] ?? "";
   if (tail.includes("@") || tail.includes("(")) return undefined;
   const token = `${match[1] ?? ""}${tail}`;
-  const colon = token.indexOf(":");
+  const colon = token.search(/[:：]/u);
   const prefix = colon < 0 ? undefined : token.slice(0, colon);
   const completionStart = start - (match[1]?.length ?? 0) - 1;
   if (tokens.some((item) => item.start === completionStart && item.end >= start && validToken(value, item))) return undefined;
+  const normalizedPrefix = prefix?.toLocaleLowerCase();
+  const kind = normalizedPrefix !== undefined && Object.hasOwn(kinds, normalizedPrefix) ? kinds[normalizedPrefix] : undefined;
   return {
     start: completionStart,
     end: start + tail.length,
     query: colon < 0 ? token : token.slice(colon + 1),
-    kind: prefix === undefined ? undefined : kinds[prefix.toLocaleLowerCase()],
-    unknownPrefix: prefix !== undefined && kinds[prefix.toLocaleLowerCase()] === undefined ? prefix : undefined
+    kind,
+    unknownPrefix: kind === undefined ? prefix : undefined
   };
+}
+
+export function suggestReferenceKinds(value: string): LocalReferenceKind[] {
+  const prefix = value.trim().toLocaleLowerCase();
+  if (!prefix) return ["tool", "task", "cron", "plan"];
+  return [...new Set(Object.entries(kinds).filter(([alias]) => alias.startsWith(prefix)).map(([, kind]) => kind))];
 }
 
 export interface DraftReferenceToken { start: number; end: number; label: string; uri: string; kind: LocalReferenceKind }
@@ -84,10 +92,11 @@ function uniqueLabel(label: string, uri: string, tokens: readonly DraftReference
 /** 草稿只保留短标签和独立身份；发送正文由 materializeDraftReferences 生成。 */
 export function insertDraftReference(value: string, completion: ReferenceCompletion, result: Pick<LocalReferenceResult, "kind" | "label" | "uri">,
   tokens: readonly DraftReferenceToken[]): { value: string; cursor: number; tokens: DraftReferenceToken[] } {
-  if (!result.label.trim() || result.label.length > 80 || /[\]\n\r]/u.test(result.label)
-    || !/^biny:\/\/[^\s()]+$/u.test(result.uri)) throw new Error("Invalid reference completion.");
+  if (!/^biny:\/\/[^\s()]+$/u.test(result.uri)) throw new Error("Invalid reference completion.");
+  const candidate = result.label.replace(/[\]\r\n]/gu, " ").replace(/\s+/gu, " ").trim();
+  const shortLabel = candidate.slice(0, 80).replace(/[\uD800-\uDBFF]$/u, "");
   const active = tokens.filter((token) => validToken(value, token));
-  const label = uniqueLabel(result.label, result.uri, active);
+  const label = uniqueLabel(shortLabel || "引用", result.uri, active);
   const suffix = value.slice(completion.end);
   const text = `@${label}`;
   const spacer = suffix && /^\s/u.test(suffix) ? "" : " ";

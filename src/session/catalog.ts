@@ -17,7 +17,9 @@ import {
   type ChatPersonalizationOverride
 } from "../personalization/index.js";
 import { listSessionSummaries, readSessionSummary, type SessionSummary } from "./events.js";
+import { sameSessionFingerprint, sessionFileFingerprint, type SessionFileFingerprint } from "./parseCache.js";
 import { ensureAgentDirs } from "./store.js";
+import { openSessionSummaryProjection } from "./summaryProjection.js";
 
 const catalogVersion = 1 as const;
 const defaultPageSize = 32;
@@ -235,8 +237,11 @@ export async function updateSessionCatalogMetadata(
       assertCatalogRecord(next);
       if (existing && catalogMetadataEquals(existing, next)) return existing;
       await writeAtomically(target, `${JSON.stringify(next)}\n`);
-      indexRefresh.completion = refreshSessionIndex(workspaceRoot);
-      options.onIndexRefresh?.(indexRefresh.completion);
+      // 个性化只影响会话的执行策略，从未出现在外部 index.json 中。
+      if (patch.personalization === undefined || Object.entries(patch).some(([key, value]) => key !== "personalization" && value !== undefined)) {
+        indexRefresh.completion = refreshSessionIndex(workspaceRoot);
+        options.onIndexRefresh?.(indexRefresh.completion);
+      }
       return next;
     });
   } finally {
@@ -274,8 +279,11 @@ export async function deleteSessionCatalogRecord(workspaceRoot: string, sessionI
  * 把 JSONL 摘要和 catalog 控制面合并成 session 级 read model。
  * catalog 缺失或损坏时只丢 lineage，不影响历史列表和恢复。
  */
-export async function listSessionCatalog(workspaceRoot: string): Promise<SessionCatalogItem[]> {
-  const summaries = await listSessionSummaries(workspaceRoot, false);
+export async function listSessionCatalog(workspaceRoot: string, persistSummaries = false): Promise<SessionCatalogItem[]> {
+  const projection = persistSummaries ? await openSessionSummaryProjection(workspaceRoot) : undefined;
+  let summaries: SessionSummary[];
+  try { summaries = await listSessionSummaries(workspaceRoot, false, projection); }
+  finally { projection?.close(); }
   if (!summaries.length) return [];
   const directory = await readCatalogDirectory(workspaceRoot);
   const items = new Array<SessionCatalogItem>(summaries.length);
@@ -287,7 +295,7 @@ export async function listSessionCatalog(workspaceRoot: string): Promise<Session
       const id = summary.fileName.replace(/\.jsonl$/u, "");
       const record = directory === undefined
         ? undefined
-        : await readCatalogFile(catalogFilePath(directory, id)).catch(() => undefined);
+        : await readCatalogFile(catalogFilePath(directory, id), true).catch(() => undefined);
       items[index] = toCatalogItem(summary, record);
     }
   }));
@@ -399,12 +407,12 @@ function toCatalogItem(summary: SessionSummary, record: SessionCatalogRecord | u
     summary,
     rootSessionId: record?.rootSessionId ?? id,
     parentSessionId: record?.parentSessionId,
-    branchPoint: record?.branchPoint,
+    branchPoint: record?.branchPoint ? { ...record.branchPoint } : undefined,
     title: record?.title,
     pinned: record?.pinned,
     archived: record?.archived,
     unread: record?.unread,
-    labels: record?.labels,
+    labels: record?.labels ? [...record.labels] : undefined,
     personalization: record?.personalization === undefined
       ? undefined
       : cloneChatPersonalizationOverride(record.personalization),
@@ -488,6 +496,11 @@ function isCursor(value: unknown): value is SessionCatalogCursor {
 }
 
 async function ensureCatalogDirectory(workspaceRoot: string): Promise<string> {
+  const existing = await readCatalogDirectory(workspaceRoot);
+  if (existing) {
+    await fs.chmod(existing, 0o700);
+    return existing;
+  }
   await ensureAgentDirs(workspaceRoot);
   const canonicalWorkspace = await fs.realpath(path.resolve(workspaceRoot));
   const sessionsDirectory = path.resolve(projectSessionsDir(canonicalWorkspace));
@@ -747,15 +760,24 @@ function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-async function readCatalogFile(filePath: string): Promise<SessionCatalogRecord | undefined> {
+const catalogReadCache = new Map<string, { fingerprint: SessionFileFingerprint; record: SessionCatalogRecord }>();
+
+async function readCatalogFile(filePath: string, useCache = false): Promise<SessionCatalogRecord | undefined> {
   try {
-    await assertCatalogFile(filePath);
+    const fingerprint = sessionFileFingerprint(await assertCatalogFile(filePath));
+    const cached = useCache ? catalogReadCache.get(filePath) : undefined;
+    if (cached && sameSessionFingerprint(fingerprint, cached.fingerprint)) return cached.record;
     const parsed: unknown = JSON.parse(await fs.readFile(filePath, "utf8"));
     if (!isCatalogRecord(parsed) || parsed.sessionId !== path.basename(filePath, ".json")) {
       throw new Error(`Invalid session catalog record: ${path.basename(filePath)}`);
     }
     // Older local catalogs may still carry the removed planning-mode flag.
     const { planning: _removedPlanning, ...record } = parsed as SessionCatalogRecord & { planning?: unknown };
+    if (useCache && sameSessionFingerprint(fingerprint, sessionFileFingerprint(await assertCatalogFile(filePath)))) {
+      catalogReadCache.delete(filePath);
+      catalogReadCache.set(filePath, { fingerprint, record });
+      if (catalogReadCache.size > 4096) catalogReadCache.delete(catalogReadCache.keys().next().value!);
+    }
     return record;
   } catch (error) {
     if (isNotFound(error)) return undefined;
@@ -763,7 +785,7 @@ async function readCatalogFile(filePath: string): Promise<SessionCatalogRecord |
   }
 }
 
-async function assertCatalogFile(filePath: string): Promise<void> {
+async function assertCatalogFile(filePath: string): Promise<Stats> {
   const stat = await fs.lstat(filePath);
   if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
     throw new Error(`Session catalog record must be a single-link regular file: ${path.basename(filePath)}`);
@@ -771,6 +793,7 @@ async function assertCatalogFile(filePath: string): Promise<void> {
   if (await fs.realpath(path.dirname(filePath)) !== path.dirname(filePath)) {
     throw new Error("Session catalog directory changed during access.");
   }
+  return stat;
 }
 
 async function writeAtomically(target: string, content: string): Promise<void> {

@@ -37,6 +37,7 @@ interface SessionStorageLocation {
 interface SessionFileEntry {
   fileName: string;
   filePath: string;
+  stat: Stats;
 }
 
 /** Only resolution-confirmed absence, never an I/O or identity-check failure. */
@@ -140,6 +141,11 @@ export async function listSessionFiles(workspaceRoot: string): Promise<string[]>
 export async function listSessionFilePaths(workspaceRoot: string): Promise<string[]> {
   const location = await resolveSessionStorage(workspaceRoot);
   return (await listSessionFileEntries(location)).map((entry) => entry.filePath);
+}
+
+/** 按当前文件身份校验派生摘要，未变化的会话无需打开正文。 */
+export async function listSessionFileSnapshots(workspaceRoot: string): Promise<SessionFileEntry[]> {
+  return await listSessionFileEntries(await resolveSessionStorage(workspaceRoot), true);
 }
 
 /** 枚举全局 session 分区，供每日工作日志补写漏掉的聊天回合。 */
@@ -461,7 +467,7 @@ function ensureSessionDirectorySync(sessionsPath: string, directory: string): vo
   }
 }
 
-async function listSessionFileEntries(location: SessionStorageLocation): Promise<SessionFileEntry[]> {
+async function listSessionFileEntries(location: SessionStorageLocation, validateFlatDirectoryOnce = false): Promise<SessionFileEntry[]> {
   await assertSessionStorage(location);
   const entries = await fs.readdir(location.sessions.path, { withFileTypes: true });
   const filesByEntry: SessionFileEntry[][] = Array.from({ length: entries.length }, () => []);
@@ -477,8 +483,8 @@ async function listSessionFileEntries(location: SessionStorageLocation): Promise
       const filePath = path.join(location.sessions.path, entry.name);
       try {
         if (entry.isFile() && isSessionFileName(entry.name)) {
-          const existing = await existingSessionFileAt(location, filePath, entry.name);
-          if (existing) files.push({ fileName: entry.name, filePath: existing });
+          const existing = await existingSessionFileAt(location, filePath, entry.name, validateFlatDirectoryOnce);
+          if (existing) files.push({ fileName: entry.name, ...existing });
         }
       } catch (error) {
         failures[index] = { error };
@@ -528,13 +534,16 @@ async function listJsonlFiles(directory: string, signal?: AbortSignal): Promise<
 
 async function findSessionFileByName(location: SessionStorageLocation, fileName: string): Promise<string | undefined> {
   const filePath = sessionFileCandidatePath(location.workspace.path, fileName.replace(/\.jsonl$/u, ""));
-  return existingSessionFileAt(location, filePath, fileName);
+  return (await existingSessionFileAt(location, filePath, fileName))?.filePath;
 }
 
-async function existingSessionFileAt(location: SessionStorageLocation, filePath: string, fileName: string): Promise<string | undefined> {
+async function existingSessionFileAt(location: SessionStorageLocation, filePath: string, fileName: string,
+  validatedFlatDirectory = false): Promise<Omit<SessionFileEntry, "fileName"> | undefined> {
   if (!isSessionFileName(fileName)) throw new Error(`Invalid session file name: ${fileName}`);
-  await assertSessionStorage(location);
-  if (!await isSessionFileParentBound(location, filePath)) return undefined;
+  if (!validatedFlatDirectory) {
+    await assertSessionStorage(location);
+    if (!await isSessionFileParentBound(location, filePath)) return undefined;
+  }
   let stat;
   try {
     stat = await fs.lstat(filePath);
@@ -565,8 +574,8 @@ async function existingSessionFileAt(location: SessionStorageLocation, filePath:
   if (relativeFile.startsWith("..") || path.isAbsolute(relativeFile) || path.basename(canonicalFile) !== fileName) {
     throw new Error(`Session resolves outside the current project's global session directory: ${fileName}`);
   }
-  await assertSessionStorage(location);
-  return canonicalFile;
+  if (!validatedFlatDirectory) await assertSessionStorage(location);
+  return { filePath: canonicalFile, stat };
 }
 
 async function isSessionFileParentBound(location: SessionStorageLocation, filePath: string): Promise<boolean> {

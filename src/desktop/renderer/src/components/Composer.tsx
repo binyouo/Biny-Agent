@@ -29,7 +29,7 @@ import { resolveProviderIconId } from "../providerIconIds.js";
 import { isResumeInput } from "./composer/resumeInput.js";
 import { SendOrStopButton } from "./composer/SendOrStopButton.js";
 import { PromptInput } from "./composer/PromptInput.js";
-import { desktopGoalCommandAllowsNoModel } from "./composer/desktopSlashCommands.js";
+import { desktopCommandAllowsNoModel } from "./composer/desktopSlashCommands.js";
 import { insertDraftReference, materializeDraftReferences, normalizeDraftReferences, reconcileDraftReferenceChange,
   referenceDraftHistoryStep, type ReferenceDraft, type ReferenceDraftTransition } from "./composer/referenceCompletion.js";
 import type { QueuedRunMessageSnapshot } from "../../../../runtime/agentEvents.js";
@@ -50,6 +50,7 @@ interface ComposerProps {
   project?: DesktopProject;
   /** 未发送草稿的附件与引用目标；能力目录和模型仍使用工作区项目。 */
   draftProjectId?: string;
+  sessionId?: string;
   drafts: Map<string, ComposerDraftState>;
   draftKey: string;
   /** 导航引用可早于 React 卸载更新，派发前同步确认提交仍属于当前聊天。 */
@@ -150,6 +151,7 @@ export const Composer = memo(function Composer({
   capabilityDefaults,
   skills,
   toolCatalog,
+  sessionId,
   onPrepare,
   onSend,
   onMutateQueuedMessage,
@@ -368,7 +370,7 @@ export const Composer = memo(function Composer({
     const value = materializeDraftReferences(draft.value, draft.tokens).trim() || (sentAttachments.length ? "请分析这些附件。" : "");
     const resume = suggestion === undefined && Boolean(recovery) && !running && !editing && isResumeInput(draft.value, attachments.length + pendingAttachments.length);
     if (!project || (!value && !resume) || busy || submitFlightRef.current || sessionWriterConflict
-      || (modelSetupRequired && (editing || !desktopGoalCommandAllowsNoModel(value))) || memoryToggleBusy || pendingAttachments.length) return;
+      || (modelSetupRequired && (editing || !desktopCommandAllowsNoModel(value))) || memoryToggleBusy || pendingAttachments.length) return;
     // 编辑模式：提交直接走「替换原消息并重新生成」，不携带附件，也不走模型切换/斜杠命令链路。
     if (editing) {
       submitFlightRef.current = true;
@@ -413,7 +415,7 @@ export const Composer = memo(function Composer({
       const [slashName] = value.split(/\s+/, 1);
       const slashCommand = DESKTOP_SLASH_COMMANDS.find((command) => command.name === slashName);
       if (sessionWriterConflict) return;
-      try { await onPrepare?.(); }
+      try { if (slashName !== "/memories") await onPrepare?.(); }
       catch (error) { if (mounted.current) onSubmitError(errorMessage(error)); return; }
       if (!mounted.current || isSubmissionCurrent?.() === false) return;
       // 引用、预填和截图回调仍可在准备期间更新草稿。此时旧提交不再拥有
@@ -605,7 +607,7 @@ export const Composer = memo(function Composer({
   const attachmentCount = attachments.length + pendingAttachments.length;
   const hasDraft = Boolean(input.trim() || attachments.length);
   const resumeAction = Boolean(recovery) && !running && !editing && isResumeInput(input, attachmentCount);
-  const modelConnectionRequired = modelSetupRequired && (editing || !desktopGoalCommandAllowsNoModel(input));
+  const modelConnectionRequired = modelSetupRequired && (editing || !desktopCommandAllowsNoModel(input));
   const sendDisabled = (externalAgent && (running || editing || attachmentCount > 0 || resumeAction)) || (resumeAction && !recovery?.canContinue) || memoryToggleBusy
     || (!hasDraft && !resumeAction) || !project || sessionWriterConflict || modelConnectionRequired || busy || pendingAttachments.length > 0;
   const sendDisabledReason = externalAgent && (running || editing || attachmentCount > 0 || resumeAction)
@@ -719,6 +721,7 @@ export const Composer = memo(function Composer({
         <PromptInput
           inputRef={inputRef}
           projectId={draftProjectId}
+          sessionId={sessionId}
           value={input}
           onChange={changeDraft}
           onReferenceChange={(value, tokens) => rememberDraft({ value, tokens })}

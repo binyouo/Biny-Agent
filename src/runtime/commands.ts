@@ -31,10 +31,7 @@ import type { InteractiveRuntimeHandle } from "./InteractiveAgentRuntime.js";
 import type { CommandSurface } from "./commandRegistry.js";
 import { isTaskRunTerminal, type TaskRunStatus } from "./TaskRunStore.js";
 import type { SessionGoalStatus } from "./SessionGoalStore.js";
-import type {
-  AgentPersonalizationState,
-  ChatPersonalizationOverridePatch
-} from "../personalization/index.js";
+import { formatPersonalizationState, memoryPolicyPatch } from "../personalization/index.js";
 
 export interface RuntimeCommandResult {
   command: string;
@@ -305,23 +302,6 @@ export async function executeRuntimeCommand(
     return result(command, "Undo", `Restored ${String(summary.restoredFiles)} file(s) from checkpoint ${summary.checkpoint.id} (${summary.checkpoint.label}).${moved}`);
   }
   return undefined;
-}
-
-function memoryPolicyPatch(action: string | undefined): ChatPersonalizationOverridePatch | undefined {
-  if (action === undefined) return undefined;
-  if (action === "inherit") return { useMemories: "inherit", contributeMemories: "inherit" };
-  if (action === "both") return { useMemories: true, contributeMemories: true };
-  if (action === "use") return { useMemories: true, contributeMemories: false };
-  if (action === "contribute") return { useMemories: false, contributeMemories: true };
-  if (action === "off") return { useMemories: false, contributeMemories: false };
-  throw new Error("Usage: /memories [inherit|both|use|contribute|off]");
-}
-
-function formatPersonalizationState(state: AgentPersonalizationState): string {
-  return [
-    `Use memories: ${state.resolved.useMemories ? "yes" : "no"} (override: ${String(state.override.useMemories)})`,
-    `Contribute memories: ${state.resolved.contributeMemories ? "yes" : "no"} (override: ${String(state.override.contributeMemories)})`
-  ].join("\n");
 }
 
 async function executeSubagentCommand(

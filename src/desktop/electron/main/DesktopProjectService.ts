@@ -176,10 +176,11 @@ export class DesktopProjectService {
     return refreshed;
   }
 
-  async refreshAllProjects(): Promise<DesktopProject[]> {
+  async refreshAllProjects(refreshGit = true): Promise<DesktopProject[]> {
     await Promise.all(this.state.projects().map((project) => this.state.refreshProjectInspection(
       project.id,
-      (current) => this.inspectProject(current)
+      (current) => this.inspectProject(current, refreshGit),
+      refreshGit
     )));
     return this.state.projects();
   }
@@ -437,7 +438,7 @@ export class DesktopProjectService {
   ): Promise<DesktopSessionSummary[]> {
     if (project.missing) return [];
     const dataRoot = await this.storage.ensureProjectData(project);
-    const catalog = await listSessionCatalog(dataRoot);
+    const catalog = await listSessionCatalog(dataRoot, true);
     const pageIds = new Set(querySessionCatalogItems(catalog).items.map((item) => item.id));
     const visible = catalog.filter((item) => item.pinned || pageIds.has(item.id));
     const latestRuns = await RuntimeEventAuthority.readLatestSessionRuns(dataRoot, visible.map((item) => item.id));
@@ -465,10 +466,12 @@ export class DesktopProjectService {
     }
     const dataRoot = await this.storage.ensureProjectData(project);
     await ensureAgentDirs(dataRoot);
-    const catalog = await listSessionCatalog(dataRoot);
-    const latestRunBySession = await RuntimeEventAuthority.readLatestSessionRuns(dataRoot, [...catalog.map((item) => item.id), ...runtimeSnapshotList(runtime).map(item => item.info.sessionId)]);
-    const sessions = await this.buildSessionSummaries(project, catalog, runtime, liveEvents, latestRunBySession);
+    const catalog = await listSessionCatalog(dataRoot, true);
     const page = querySessionCatalogItems(catalog);
+    const latestRunBySession = await RuntimeEventAuthority.readLatestSessionRuns(dataRoot, [
+      ...catalog.map(item => item.id), ...runtimeSnapshotList(runtime).map(item => item.info.sessionId)
+    ]);
+    const sessions = await this.buildSessionSummaries(project, catalog, runtime, liveEvents, latestRunBySession);
     const pageSessions = page.items.map((item) => desktopSessionSummary(
       project.id,
       item,
@@ -509,7 +512,7 @@ export class DesktopProjectService {
     }
     const dataRoot = await this.storage.ensureProjectData(project);
     await ensureAgentDirs(dataRoot);
-    const catalog = await listSessionCatalog(dataRoot);
+    const catalog = await listSessionCatalog(dataRoot, true);
     const page = querySessionCatalogItems(catalog, options satisfies SessionCatalogQuery);
     const pinnedItems = options.includePinnedSessions && !page.revisionChanged
       ? catalog.filter((item) => item.pinned)
@@ -679,8 +682,7 @@ export class DesktopProjectService {
     patch: SessionCatalogMetadataPatch,
     expectedRevision?: string
   ): Promise<SessionCatalogRecord> {
-    const dataRoot = await this.storage.ensureProjectData(project);
-    return await updateSessionCatalogMetadata(dataRoot, sessionId, patch, expectedRevision);
+    return await updateSessionCatalogMetadata(project.path, sessionId, patch, expectedRevision);
   }
 
   async markSessionRead(
@@ -700,14 +702,14 @@ export class DesktopProjectService {
     const sourceEvents = source.events;
     const duplicatedEvents = rebaseForkedSessionEvents(sourceEvents);
     const content = duplicatedEvents.length ? `${duplicatedEvents.map((event) => JSON.stringify(event)).join("\n")}\n` : "";
-    const sourceCatalog = (await listSessionCatalog(dataRoot)).find((item) => item.id === sessionId);
+    const sourceCatalog = await readSessionCatalogRecord(dataRoot, sessionId);
     await createSessionFile(dataRoot, targetSessionId, Buffer.from(content, "utf8"), {
       // Publish the inherited policy and metadata before exposing copied history.
       beforeWrite: async () => {
         await registerSessionBranch(dataRoot, {
           sessionId: targetSessionId,
           parentSessionId: sessionId,
-          branchPoint: { kind: "event", index: sourceCatalog?.summary.eventCount ?? 0 }
+          branchPoint: { kind: "event", index: source.summary?.eventCount ?? 0 }
         });
         await this.copyCatalogMetadata(dataRoot, sourceCatalog, targetSessionId);
       }
@@ -779,7 +781,7 @@ export class DesktopProjectService {
 
   private async copyCatalogMetadata(
     dataRoot: string,
-    source: SessionCatalogItem | undefined,
+    source: Pick<SessionCatalogItem, "title" | "labels" | "fastMode"> | undefined,
     targetSessionId: string
   ): Promise<void> {
     await updateSessionCatalogMetadata(dataRoot, targetSessionId, {

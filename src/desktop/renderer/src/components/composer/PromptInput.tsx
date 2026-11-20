@@ -10,7 +10,7 @@ import { findPromptCompletion, filterPromptCompletions, replacePromptCompletion,
 import { promptSkillDeletion, promptSkillTokens } from "./promptDecorations.js";
 import { useBreathingCaret } from "./useBreathingCaret.js";
 import { findReferenceCompletion, insertDraftReference, normalizeDraftReferences, reconcileDraftReferenceChange,
-  referenceDraftDeletion, referenceKeyAction, referenceKindLabel, referenceResultSubtitle, type DraftReferenceToken } from "./referenceCompletion.js";
+  referenceDraftDeletion, referenceKeyAction, referenceKindLabel, referenceResultSubtitle, suggestReferenceKinds, type DraftReferenceToken } from "./referenceCompletion.js";
 
 const referenceIcons: Record<LocalReferenceKind, IconName> = {
   date: "calendar", project: "folder", file: "file", thread: "message", message: "message", memory: "brain",
@@ -19,7 +19,7 @@ const referenceIcons: Record<LocalReferenceKind, IconName> = {
   plan: "list-tree"
 };
 
-export function PromptInput({ value, onChange, onReferenceChange, onInspectReference, referenceTokens, onSubmit, onFiles, disabled, placeholder, skills, projectId, inputRef }: {
+export function PromptInput({ value, onChange, onReferenceChange, onInspectReference, referenceTokens, onSubmit, onFiles, disabled, placeholder, skills, projectId, sessionId, inputRef }: {
   value: string;
   onChange(value: string, inputType?: string): void;
   onReferenceChange(value: string, tokens: DraftReferenceToken[]): void;
@@ -31,6 +31,7 @@ export function PromptInput({ value, onChange, onReferenceChange, onInspectRefer
   placeholder: string;
   skills: readonly DesktopSkillCatalogEntry[];
   projectId?: string;
+  sessionId?: string;
   inputRef: RefObject<HTMLTextAreaElement | null>;
 }): React.JSX.Element {
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -65,30 +66,34 @@ export function PromptInput({ value, onChange, onReferenceChange, onInspectRefer
   const referenceOpen = focused && !disabled && projectId !== undefined && referenceCompletion !== undefined && referenceKey !== referenceDismissed;
   // 已展示的结果也属于发起它的补全，不能在新查询的防抖/请求期间被选中。
   const referenceSearchKey = referenceOpen && referenceQuery !== undefined && projectId && !unknownReferencePrefix
-    ? JSON.stringify([projectId, referenceKey, referenceKind, compositionRevision]) : undefined;
+    ? JSON.stringify([projectId, sessionId, referenceKey, referenceKind, compositionRevision]) : undefined;
   const currentReferenceResponse = referenceResponse?.key === referenceSearchKey ? referenceResponse : undefined;
   const referenceResults = currentReferenceResponse?.results ?? [];
-  const referenceError = unknownReferencePrefix ? `未知引用种类：${unknownReferencePrefix}` : currentReferenceResponse?.error;
+  const referenceKinds = !referenceOpen || referenceKind ? [] : suggestReferenceKinds(unknownReferencePrefix ?? referenceQuery ?? "");
+  const referenceCount = referenceKinds.length + referenceResults.length;
+  const referenceLoading = referenceSearchKey !== undefined && currentReferenceResponse === undefined;
+  const referenceError = unknownReferencePrefix && !referenceKinds.length ? `未知引用种类：${unknownReferencePrefix}` : currentReferenceResponse?.error;
   const completionKey = completion ? `${String(completion.start)}:${String(completion.end)}:${completion.query}` : undefined;
   const options = completion ? filterPromptCompletions(items, completion.query) : [];
   const open = focused && !disabled && completion !== undefined && completionKey !== dismissed;
   const selected = Math.min(activeIndex, Math.max(0, options.length - 1));
-  const selectedReference = Math.min(referenceIndex, Math.max(0, referenceResults.length - 1));
+  const selectedReference = Math.min(referenceIndex, Math.max(0, referenceCount - 1));
   useBreathingCaret(inputRef, surfaceRef, caretRef, trailRef, value, disabled);
 
   useEffect(() => {
     if (!referenceSearchKey || referenceQuery === undefined || !projectId) { setReferenceResponse(undefined); return; }
     let active = true;
     const timer = window.setTimeout(() => {
+      if (composing.current) return;
       void window.biny.referenceSearch(projectId, referenceQuery, referenceKind,
-        Intl.DateTimeFormat().resolvedOptions().timeZone).then((results) => {
-        if (active) { setReferenceResponse({ key: referenceSearchKey, results }); setReferenceIndex(0); }
+        Intl.DateTimeFormat().resolvedOptions().timeZone, { sessionId }).then((results) => {
+        if (active) setReferenceResponse({ key: referenceSearchKey, results });
       }).catch((cause) => {
         if (active) setReferenceResponse({ key: referenceSearchKey, results: [], error: cause instanceof Error ? cause.message : String(cause) });
       });
     }, 120);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [referenceSearchKey, referenceQuery, referenceKind, projectId]);
+  }, [referenceSearchKey, referenceQuery, referenceKind, projectId, sessionId]);
 
   useLayoutEffect(() => {
     const input = inputRef.current;
@@ -135,8 +140,24 @@ export function PromptInput({ value, onChange, onReferenceChange, onInspectRefer
   };
 
   const chooseReference = (index: number): void => {
-    const result = referenceResults[index];
-    if (!referenceCompletion || !result) return;
+    if (!referenceCompletion) return;
+    const kind = referenceKinds[index];
+    if (kind) {
+      const query = unknownReferencePrefix ? referenceCompletion.query : "";
+      const prefix = `@${kind}:${query}`;
+      const next = value.slice(0, referenceCompletion.start) + prefix + value.slice(referenceCompletion.end);
+      const cursor = referenceCompletion.start + prefix.length;
+      onReferenceChange(next, reconcileDraftReferenceChange(value, next, referenceTokens));
+      setReferenceIndex(0);
+      selectionFrame.current = requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(cursor, cursor);
+        setSelection({ start: cursor, end: cursor });
+      });
+      return;
+    }
+    const result = referenceResults[index - referenceKinds.length];
+    if (!result) return;
     const next = insertDraftReference(value, referenceCompletion, result, referenceTokens);
     onReferenceChange(next.value, next.tokens);
     onInspectReference?.(result);
@@ -172,7 +193,7 @@ export function PromptInput({ value, onChange, onReferenceChange, onInspectRefer
       aria-label="任务输入"
       aria-autocomplete="list"
       aria-controls={open || referenceOpen ? menuId : undefined}
-      aria-activedescendant={open && options.length ? `${menuId}-${String(selected)}` : referenceOpen && referenceResults.length ? `${menuId}-ref-${String(selectedReference)}` : undefined}
+      aria-activedescendant={open && options.length ? `${menuId}-${String(selected)}` : referenceOpen && referenceCount ? `${menuId}-ref-${String(selectedReference)}` : undefined}
       disabled={disabled}
       placeholder={placeholder}
       value={value}
@@ -189,6 +210,7 @@ export function PromptInput({ value, onChange, onReferenceChange, onInspectRefer
         onChange(event.currentTarget.value, (event.nativeEvent as InputEvent).inputType);
         setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd });
         setActiveIndex(0);
+        setReferenceIndex(0);
         setDismissed(undefined);
         setReferenceDismissed(undefined);
       }}
@@ -213,12 +235,12 @@ export function PromptInput({ value, onChange, onReferenceChange, onInspectRefer
         });
       }}
       onKeyDown={(event) => {
-        const referenceAction = referenceKeyAction(event.nativeEvent, composing.current, referenceOpen, referenceResults.length);
+        const referenceAction = referenceKeyAction(event.nativeEvent, composing.current, referenceOpen, referenceCount);
         if (referenceAction !== "native") {
           event.preventDefault();
           if (referenceAction === "dismiss") { event.stopPropagation(); setReferenceDismissed(referenceKey); }
           else if (referenceAction === "next" || referenceAction === "previous") {
-            setReferenceIndex((selectedReference + (referenceAction === "next" ? 1 : -1) + referenceResults.length) % referenceResults.length);
+            setReferenceIndex((selectedReference + (referenceAction === "next" ? 1 : -1) + referenceCount) % referenceCount);
           } else chooseReference(selectedReference);
           return;
         }
@@ -276,18 +298,33 @@ export function PromptInput({ value, onChange, onReferenceChange, onInspectRefer
     {referenceOpen ? <ComposerPopover anchorRef={anchorRef} className="composer-popover biny-prompt-completions" phase="open">
       <div id={menuId} role="listbox" aria-label="本地引用">
         {referenceError ? <p className="biny-prompt-completions-empty" role="alert">{referenceError}</p> : null}
-        {!referenceError && !referenceResults.length ? <p className="biny-prompt-completions-empty">没有匹配的引用</p> : null}
-        {referenceResults.map((result, index) => <React.Fragment key={result.uri}>
-          {index === 0 || referenceResults[index - 1]?.kind !== result.kind ? <p className="biny-prompt-completions-kind" role="presentation">{referenceKindLabel(result.kind)}</p> : null}
-          <button id={`${menuId}-ref-${String(index)}`} type="button" role="option"
+        {referenceKinds.map((kind, index) => <button key={kind} id={`${menuId}-ref-${String(index)}`} type="button" role="option"
           aria-selected={index === selectedReference} tabIndex={-1} onMouseDown={(event) => event.preventDefault()}
           ref={index === selectedReference ? (element) => element?.scrollIntoView({ block: "nearest" }) : undefined}
           onClick={() => chooseReference(index)}>
-          <span className="desktop-slash-option"><span className="desktop-slash-option-copy">
-            <span className="desktop-slash-option-name"><code>{result.label}</code></span>
-            <span className="desktop-slash-option-desc">{referenceResultSubtitle(result)}</span>
-          </span></span>
-        </button></React.Fragment>)}
+          <span className="desktop-slash-option">
+            <span className="desktop-slash-option-icon"><Icon name={referenceIcons[kind]} size={14} /></span>
+            <span className="desktop-slash-option-copy"><span className="desktop-slash-option-name">{referenceKindLabel(kind)}</span></span>
+          </span>
+        </button>)}
+        {!referenceError && !referenceResults.length && (referenceLoading || !referenceKinds.length) ? <p className="biny-prompt-completions-empty" role="status">
+          {referenceLoading ? "正在查找引用…" : "没有匹配的引用"}
+        </p> : null}
+        {referenceResults.map((result, resultIndex) => {
+          const index = resultIndex + referenceKinds.length;
+          return <React.Fragment key={result.uri}>
+            {(!referenceQuery || referenceKind) && (resultIndex === 0 || referenceResults[resultIndex - 1]?.kind !== result.kind) ? <p className="biny-prompt-completions-kind" role="presentation">{referenceKindLabel(result.kind)}</p> : null}
+            <button id={`${menuId}-ref-${String(index)}`} type="button" role="option"
+              aria-selected={index === selectedReference} tabIndex={-1} onMouseDown={(event) => event.preventDefault()}
+              ref={index === selectedReference ? (element) => element?.scrollIntoView({ block: "nearest" }) : undefined}
+              onClick={() => chooseReference(index)}>
+              <span className="desktop-slash-option"><span className="desktop-slash-option-copy">
+                <span className="desktop-slash-option-name"><code>{result.label}</code></span>
+                <span className="desktop-slash-option-desc">{referenceResultSubtitle(result)}</span>
+              </span></span>
+            </button>
+          </React.Fragment>;
+        })}
       </div>
     </ComposerPopover> : null}
   </div>;

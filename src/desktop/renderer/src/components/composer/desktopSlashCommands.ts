@@ -139,8 +139,8 @@ export function buildDesktopComposerItems(skills: readonly DesktopSkillCatalogEn
   return [...commandItems, ...skillItems];
 }
 
-export function desktopGoalCommandAllowsNoModel(input: string): boolean {
+export function desktopCommandAllowsNoModel(input: string): boolean {
   const [name, action, ...args] = input.trim().split(/\s+/u);
-  return name === "/goal" && args.length === 0
-    && (action === undefined || ["show", "pause", "clear"].includes(action.toLowerCase()));
+  return name === "/memories" || (name === "/goal" && args.length === 0
+    && (action === undefined || ["show", "pause", "clear"].includes(action.toLowerCase())));
 }

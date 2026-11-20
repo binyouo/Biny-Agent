@@ -20,7 +20,7 @@ import {
   readBoundedSessionHandle
 } from "./limits.js";
 import { cachedSessionEvents, lookupSessionEvents, previousSessionParse, sameSessionFingerprint, sessionFileFingerprint, type SessionFileFingerprint } from "./parseCache.js";
-import { isHeartbeatSessionId, listSessionFiles, readSessionFileOrCached, sessionIdFromFile } from "./store.js";
+import { isHeartbeatSessionId, listSessionFileSnapshots, readSessionFileOrCached, sessionIdFromFile } from "./store.js";
 import type { SessionEvent, SessionTurnStatusEvent } from "./recorder.js";
 export type { SessionEvent } from "./recorder.js";
 import { publicAssistantMessage, publicUserMessage } from "./publicMessage.js";
@@ -411,6 +411,13 @@ export async function readSessionSummary(
   workspaceRoot: string,
   session: string | undefined
 ): Promise<SessionSummary | undefined> {
+  return (await readSessionSummarySnapshot(workspaceRoot, session)).summary;
+}
+
+async function readSessionSummarySnapshot(
+  workspaceRoot: string,
+  session: string | undefined
+): Promise<{ summary: SessionSummary | undefined; fingerprint: SessionFileFingerprint }> {
   const result = await readSessionFileOrCached(workspaceRoot, session, (filePath, stat) => {
     const entry = summaryCache.get(filePath);
     const fingerprint = sessionFileFingerprint(stat);
@@ -445,13 +452,14 @@ export async function readSessionSummary(
     return { summary: summary ? { ...summary, eventCount, createdAt: firstTime ?? stat.birthtime.toISOString(), updatedAt: lastTime ?? stat.mtime.toISOString() } : undefined };
   });
   const summary = result.value.summary;
+  const fingerprint = sessionFileFingerprint(result.stat);
   const weight = Buffer.byteLength(JSON.stringify(summary) ?? "") + 256;
   const previous = summaryCache.get(result.filePath);
   if (previous) summaryCacheBytes -= previous.weight;
   summaryCache.delete(result.filePath);
   // 单条摘要超过总预算时不入缓存，避免先淘汰所有健康摘要、再淘汰自身。
-  if (weight > maxSummaryCacheBytes) return summary;
-  summaryCache.set(result.filePath, { fingerprint: sessionFileFingerprint(result.stat), summary: structuredClone(summary), weight });
+  if (weight > maxSummaryCacheBytes) return { summary, fingerprint };
+  summaryCache.set(result.filePath, { fingerprint, summary: structuredClone(summary), weight });
   summaryCacheBytes += weight;
   while (summaryCache.size > 4096 || summaryCacheBytes > maxSummaryCacheBytes) {
     const oldest = summaryCache.keys().next();
@@ -459,7 +467,7 @@ export async function readSessionSummary(
     summaryCacheBytes -= summaryCache.get(oldest.value)!.weight;
     summaryCache.delete(oldest.value);
   }
-  return summary;
+  return { summary, fingerprint };
 }
 
 // 摘要独立缓存，列表扫描不占用恢复路径的完整事件缓存。容量与字节数同时有界。
@@ -581,21 +589,32 @@ function parseSessionEventsWithPrefix(
   return { events: head === 0 ? events : [...events.slice(head), ...events.slice(0, head)], truncated };
 }
 
-export async function listSessionSummaries(workspaceRoot: string, includeHeartbeat = true): Promise<SessionSummary[]> {
-  const fileNames = (await listSessionFiles(workspaceRoot))
-    .filter(fileName => includeHeartbeat || !isHeartbeatSessionId(sessionIdFromFile(fileName)));
+export async function listSessionSummaries(workspaceRoot: string, includeHeartbeat = true,
+  projection?: SessionSummaryProjection): Promise<SessionSummary[]> {
+  const files = (await listSessionFileSnapshots(workspaceRoot))
+    .filter(({ fileName }) => includeHeartbeat || !isHeartbeatSessionId(sessionIdFromFile(fileName)));
   // Bound reads so a large history does not create an unbounded file-descriptor
   // burst. A corrupt JSONL file is isolated from the rest of the session list.
-  const summaries: Array<SessionSummary | undefined> = new Array(fileNames.length);
+  const summaries: Array<SessionSummary | undefined> = new Array(files.length);
   let nextIndex = 0;
-  const workers = Array.from({ length: Math.min(sessionListReadConcurrency, fileNames.length) }, async () => {
-    while (nextIndex < fileNames.length) {
+  const workers = Array.from({ length: Math.min(sessionListReadConcurrency, files.length) }, async () => {
+    while (nextIndex < files.length) {
       const index = nextIndex;
       nextIndex += 1;
-      const fileName = fileNames[index];
-      if (!fileName) continue;
+      const { fileName, filePath, stat } = files[index]!;
       try {
-        summaries[index] = await readSessionSummary(workspaceRoot, fileName);
+        const fingerprint = sessionFileFingerprint(stat);
+        const stored = projection?.get(fileName, fingerprint);
+        if (stored) { summaries[index] = stored.summary; continue; }
+        const cached = summaryCache.get(filePath);
+        if (cached && sameSessionFingerprint(cached.fingerprint, fingerprint)) {
+          summaries[index] = structuredClone(cached.summary);
+          projection?.put(fileName, cached);
+          continue;
+        }
+        const current = await readSessionSummarySnapshot(workspaceRoot, fileName);
+        summaries[index] = current.summary;
+        projection?.put(fileName, current);
       } catch {
         // Opening a corrupt session directly still reports the precise error;
         // listing healthy sessions remains available for recovery.
@@ -606,6 +625,11 @@ export async function listSessionSummaries(workspaceRoot: string, includeHeartbe
   return summaries
     .filter((summary): summary is SessionSummary => summary !== undefined)
     .sort((a, b) => sessionTime(b.updatedAt) - sessionTime(a.updatedAt) || b.fileName.localeCompare(a.fileName));
+}
+
+export interface SessionSummaryProjection {
+  get(fileName: string, fingerprint: SessionFileFingerprint): { summary: SessionSummary | undefined } | undefined;
+  put(fileName: string, state: { fingerprint: SessionFileFingerprint; summary: SessionSummary | undefined }): void;
 }
 
 function sessionTime(value: string): number {

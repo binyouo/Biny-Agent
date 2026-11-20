@@ -2596,7 +2596,8 @@ export class AgentSession {
       }
       await this.acpClient!.connect(options.abortSignal);
       if (userReference?.id) await this.recorder.recordAndFlush({ type: "message_metadata", messageId: userReference.id, metadata: { acpProvider: providerAlias } });
-      const snapshot = await this.readPersonalizationState({ config: structuredClone(this.options.config) });
+      const snapshot = await this.readPersonalizationState();
+      this.activeConfig = snapshot.config;
       this.activePersonalization = snapshot.state.resolved;
       const content: ContentBlock[] = [];
       if (launch.allowMemory && this.activePersonalization.useMemories) {

@@ -27,6 +27,8 @@ type DesktopSearchItem = SearchableItem<{
   targetId: string;
 }>;
 
+const fileIndexMaxAgeMs = 15_000;
+
 function getRecentSearchStorage(): RecentSearchStorage | null {
   try { return typeof window === "undefined" ? null : window.localStorage; } catch { return null; }
 }
@@ -126,49 +128,32 @@ export function SearchOverlay({
 }: SearchOverlayProps): React.JSX.Element | null {
   const [query, setQuery] = useState("");
   const [recentQueries, setRecentQueries] = useState<string[]>(() => loadRecentSearches(getRecentSearchStorage()));
-  const [fileIndex, setFileIndex] = useState<DesktopWorkspaceFileIndex>();
   const [fileIndexLoading, setFileIndexLoading] = useState(false);
   const queryRef = useRef("");
   const recentQueriesRef = useRef(recentQueries);
-  const fileIndexRequest = useRef(0);
-  const fileIndexPromise = useRef<{ projectId: string; promise: Promise<DesktopWorkspaceFileIndex> } | undefined>(undefined);
+  const fileIndex = useRef<{ projectId: string; promise: Promise<DesktopWorkspaceFileIndex>; expiresAt: number } | undefined>(undefined);
   const itemById = useRef(new Map<string, DesktopSearchItem>());
+  const searchScope = useRef({ open, selectedProjectId });
+
+  useLayoutEffect(() => {
+    searchScope.current = { open, selectedProjectId };
+    if (fileIndex.current?.projectId !== selectedProjectId) {
+      fileIndex.current = undefined;
+      setFileIndexLoading(false);
+    }
+  }, [open, selectedProjectId]);
 
   useEffect(() => {
     if (!open) {
       setQuery("");
       queryRef.current = "";
-      setFileIndex(undefined);
-      setFileIndexLoading(false);
-      fileIndexPromise.current = undefined;
       return;
     }
 
     const storedQueries = loadRecentSearches(getRecentSearchStorage());
     recentQueriesRef.current = storedQueries;
     setRecentQueries(storedQueries);
-    if (!selectedProjectId) {
-      setFileIndex(undefined);
-      setFileIndexLoading(false);
-      fileIndexPromise.current = undefined;
-      return;
-    }
-
-    const request = ++fileIndexRequest.current;
-    let cancelled = false;
-    setFileIndex(undefined);
-    setFileIndexLoading(true);
-    const promise = window.biny.workspaceFileIndex(selectedProjectId);
-    fileIndexPromise.current = { projectId: selectedProjectId, promise };
-    void promise.then(index => {
-      if (!cancelled && fileIndexRequest.current === request) setFileIndex(index);
-    }).catch(() => {
-      if (!cancelled && fileIndexRequest.current === request) setFileIndex(undefined);
-    }).finally(() => {
-      if (!cancelled && fileIndexRequest.current === request) setFileIndexLoading(false);
-    });
-    return () => { cancelled = true; };
-  }, [open, selectedProjectId]);
+  }, [open]);
 
   const projectById = useMemo(() => new Map(projects.map(project => [project.id, project])), [projects]);
   const staticItems = useMemo<DesktopSearchItem[]>(() => [
@@ -213,19 +198,27 @@ export function SearchOverlay({
     };
     return {
       async search(value) {
+        const scope = searchScope.current;
         setQuery(value);
         queryRef.current = value;
         const results = await staticSource.search(value);
         const trimmed = value.trim();
-        if (trimmed.length < 2 || !selectedProjectId) return remember(results);
-        let index = fileIndex;
-        if (!index) {
-          const pending = fileIndexPromise.current;
-          if (pending?.projectId === selectedProjectId) {
-            try { index = await pending.promise; } catch { index = undefined; }
-          }
+        if (trimmed.length < 2 || !selectedProjectId || !scope.open || searchScope.current !== scope) return remember(results);
+        let pending = fileIndex.current;
+        if (pending?.projectId !== selectedProjectId || pending.expiresAt <= Date.now()) {
+          const promise = window.biny.workspaceFileIndex(selectedProjectId);
+          const request = { projectId: selectedProjectId, promise, expiresAt: Infinity };
+          fileIndex.current = pending = request;
+          setFileIndexLoading(true);
+          void promise.then(() => { request.expiresAt = Date.now() + fileIndexMaxAgeMs; }, () => {
+            if (fileIndex.current === request) fileIndex.current = undefined;
+          }).finally(() => {
+            if (!fileIndex.current || fileIndex.current === request) setFileIndexLoading(false);
+          });
         }
-        if (!index) return remember(results);
+        let index: DesktopWorkspaceFileIndex;
+        try { index = await pending.promise; } catch { return remember(results); }
+        if (searchScope.current !== scope) return results;
         const project = projectById.get(selectedProjectId);
         const files: DesktopSearchItem[] = matchDesktopWorkspaceFiles(index.files, trimmed).map(file => ({
           id: `file:${selectedProjectId}:${file.path}`,
@@ -259,7 +252,7 @@ export function SearchOverlay({
         return remember([...recent, ...await staticSource.bootstrap()]);
       }
     };
-  }, [fileIndex, projectById, selectedProjectId, staticItems]);
+  }, [projectById, selectedProjectId, staticItems]);
 
   const removeRecent = (recentQuery: string): void => {
     const nextQueries = removeRecentSearch(getRecentSearchStorage(), recentQuery);

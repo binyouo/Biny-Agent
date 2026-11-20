@@ -14,7 +14,7 @@ const methods = service.members.filter(ts.isMethodDeclaration);
 const sessions = methods.find((node) => node.name.getText(parsed) === "sessions");
 assert.ok(sessions);
 const baselineMethod = "private async sessions(project: LocalReferenceProject): Promise<Array<{ id: string; events: SessionEvent[] }>> {\n    const rows: Array<{ id: string; events: SessionEvent[] }> = [];\n    for (const { id, file } of await this.sessionFiles(project)) {\n      const events: SessionEvent[] = [];\n      for (const line of (await readFile(file, \"utf8\")).split(\"\\n\")) {\n        if (!line.trim()) continue;\n        try { events.push(JSON.parse(line) as SessionEvent); } catch { break; }\n      }\n      rows.push({ id, events });\n    }\n    return rows;\n  }";
-const candidateMethod = "private async sessions(project: LocalReferenceProject, threadId?: string): Promise<Array<{ id: string; events: SessionEvent[] }>> {\n    const rows: Array<{ id: string; events: SessionEvent[] }> = [];\n    for (const { id, file } of await this.sessionFiles(project)) {\n      if (threadId !== undefined && id !== threadId) continue;\n      const events: SessionEvent[] = [];\n      for (const line of (await readFile(file, \"utf8\")).split(\"\\n\")) {\n        if (!line.trim()) continue;\n        try { events.push(JSON.parse(line) as SessionEvent); } catch { break; }\n      }\n      rows.push({ id, events });\n    }\n    return rows;\n  }";
+const candidateMethod = "private async sessions(project: LocalReferenceProject, threadId?: string): Promise<Array<{ id: string; events: SessionEvent[] }>> {\n    const rows: Array<{ id: string; events: SessionEvent[] }> = [];\n    for (const { id, file } of await this.sessionFiles(project, threadId)) {\n      const events: SessionEvent[] = [];\n      for (const line of (await readFile(file, \"utf8\")).split(\"\\n\")) {\n        if (!line.trim()) continue;\n        try { events.push(JSON.parse(line) as SessionEvent); } catch { break; }\n      }\n      rows.push({ id, events });\n    }\n    return rows;\n  }";
 assert.ok([baselineMethod, candidateMethod].includes(sessions.getText(parsed)), "execute only an exact reviewed method");
 const methodText = sessions.getText(parsed).replace(/^private async sessions/u, "async function sessions");
 const compiled = ts.transpileModule(methodText + "\nsessions;", {
@@ -26,7 +26,7 @@ assert.equal((compiled.diagnostics ?? []).filter((item) => item.category === ts.
 type Entry = { id: string; file: string };
 type Event = { type: string; content?: string; toolCallId?: string; [key: string]: unknown };
 type Row = { id: string; events: Event[] };
-type Sessions = (this: { sessionFiles(project: object): Promise<Entry[]> }, project: object, threadId?: string) => Promise<Row[]>;
+type Sessions = (this: { sessionFiles(project: object, threadId?: string): Promise<Entry[]> }, project: object, threadId?: string) => Promise<Row[]>;
 const project = Object.freeze({ id: "project-one", path: "/synthetic/project-one", name: "Synthetic" });
 function harness(entries: Entry[], files: Map<string, string | Error>, enumerationError?: Error) {
   const calls: string[] = [];
@@ -52,11 +52,11 @@ function harness(entries: Entry[], files: Map<string, string | Error>, enumerati
     JSON: Object.freeze({ parse })
   }, { timeout: 1_000, contextCodeGeneration: { strings: false, wasm: false } }) as Sessions;
   const receiver = {
-    sessionFiles: async (requested: object): Promise<Entry[]> => {
+    sessionFiles: async (requested: object, threadId?: string): Promise<Entry[]> => {
       assert.equal(requested, project);
       enumerations += 1;
       if (enumerationError) throw enumerationError;
-      return currentEntries.map((entry) => ({ ...entry }));
+      return currentEntries.filter(entry => threadId === undefined || entry.id === threadId).map((entry) => ({ ...entry }));
     }
   };
   return {
@@ -176,7 +176,7 @@ async function main(): Promise<void> {
     assert.equal(JSON.stringify(rows[0]?.events.map((event) => event.content)), JSON.stringify(["one", "two"]));
     assert.equal(fake.parses(), 3);
   });
-  await check("AST caller contract narrows point references; search and allMessages remain full scans", () => {
+  await check("AST caller contract narrows point references and scoped search", () => {
     const found: Array<{ method: string; callee: string; args: string[] }> = [];
     for (const method of methods) {
       const visit = (node: ts.Node): void => {
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
     }
     assert.equal(JSON.stringify(found), JSON.stringify([
       { method: "resolve", callee: "sessions", args: ["project", "threadId"] },
-      { method: "search", callee: "sessions", args: ["project"] },
+      { method: "search", callee: "sessions", args: ["project", "scope?.sessionId"] },
       { method: "allMessages", callee: "messageReferences", args: ["projectId"] },
       { method: "messageReferences", callee: "sessions", args: ["project", "threadId"] },
       { method: "referenceForMessage", callee: "messageReferences", args: ["projectId", "threadId"] }

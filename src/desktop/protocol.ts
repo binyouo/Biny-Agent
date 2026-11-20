@@ -59,7 +59,7 @@ import { slashCommandsForSurface, type SlashCommandDefinition } from "../runtime
 import type { SessionBranchPoint, SessionIsolation } from "../session/catalog.js";
 import type { SessionEvent } from "../session/recorder.js";
 import type { RuntimeRunStatus } from "../runtime/RuntimeAuthority.js";
-import type { LocalReferenceKind, LocalReferenceResult } from "../session/localReferences.js";
+import type { LocalReferenceKind, LocalReferenceResult, LocalReferenceSearchScope } from "../session/localReferences.js";
 import type { LocalReferenceLink } from "../session/referenceGraph.js";
 import type { DateReferenceDetail } from "../session/dateReferenceDetail.js";
 import type { NativeCalendarResult } from "../session/nativeCalendar.js";
@@ -1631,6 +1631,7 @@ export interface DesktopSlashResult {
   compaction?: { outcome: "compacted" | "unchanged" };
   sessionId?: string;
   sessionGoal?: { action: "get" | "set" | "pause" | "resume" | "clear"; status?: SessionGoalStatus };
+  chatMetadata?: { receipt: DesktopSessionMetadataReceipt; previousRevision: string };
 }
 
 /** Desktop 后台面板使用的 authority 投影；渲染层不接触 SQLite 或 Host socket。 */
@@ -1789,6 +1790,7 @@ export interface DesktopApi {
   revealProject(projectId: string): Promise<void>;
   openProjectTerminal(projectId: string): Promise<void>;
   startDraft(projectId: string, isolation?: "shared" | "worktree"): Promise<DesktopWorkspaceSnapshot>;
+  startDraft(projectId: string, isolation: "shared" | undefined, reuseWorkspace: true): Promise<undefined>;
   readSessionTrace(projectId: string, sessionId: string): Promise<SessionEvent[]>;
   openSession(projectId: string, sessionId: string): Promise<DesktopSessionDocument>;
   retryRuntime(projectId: string, sessionId?: string): Promise<DesktopRuntimeRetryResult>;
@@ -1884,7 +1886,7 @@ export interface DesktopApi {
   /** 记忆条目分页读取；offset 分页，revision 变化时调用方应回第 0 页。 */
   memoryEntries(projectId: string, offset: number, limit: number, includeArchived?: boolean): Promise<DesktopMemoryEntriesPage>;
   referenceKinds(): Promise<Array<{ kind: LocalReferenceKind; label: string }>>;
-  referenceSearch(projectId: string, query: string, kind?: LocalReferenceKind, timeZone?: string): Promise<LocalReferenceResult[]>;
+  referenceSearch(projectId: string, query: string, kind?: LocalReferenceKind, timeZone?: string, scope?: LocalReferenceSearchScope): Promise<LocalReferenceResult[]>;
   referenceResolve(projectId: string, uri: string): Promise<LocalReferenceResult>;
   referenceBacklinks(projectId: string, uri: string): Promise<LocalReferenceLink[]>;
   referenceCaptureSnippet(projectId: string, sourceUri: string, start: number, end: number): Promise<LocalReferenceResult>;

@@ -70,7 +70,6 @@ import { resolveActivityReportRange } from "../../../activity/analyzer.js";
 import { readDailyMemoryNote } from "../../../activity/dailyNotes.js";
 import { LocalReferenceGraph, LocalReferenceService, localReferenceKinds } from "../../../session/localReferences.js";
 import { globalAgentDir } from "../../../config/paths.js";
-import { runtimeReferenceEntries } from "../../../session/runtimeReferenceEntries.js";
 import { DateReferenceDetailService } from "../../../session/dateReferenceDetail.js";
 import { readNativeCalendar } from "../../../session/nativeCalendar.js";
 import { parseLocalReferenceUri } from "../../../session/localReferences.js";
@@ -433,8 +432,11 @@ export function registerDesktopIpc(context: IpcContext): void {
     context.terminals.dispose(idSchema.parse(terminalId));
   });
 
-  handleRecoveryGated(desktopIpc.startDraft, async (_event, projectId: unknown, isolation: unknown) => {
-    return await context.agents.startDraft(idSchema.parse(projectId), z.enum(["shared", "worktree"]).optional().parse(isolation));
+  handleRecoveryGated(desktopIpc.startDraft, async (_event, projectId: unknown, isolation: unknown, reuseWorkspace: unknown) => {
+    const id = idSchema.parse(projectId);
+    const mode = z.enum(["shared", "worktree"]).optional().parse(isolation);
+    const reuse = z.literal(true).optional().parse(reuseWorkspace);
+    return reuse && mode !== "worktree" ? await context.agents.startDraft(id, mode, true) : await context.agents.startDraft(id, mode);
   });
 
   // Trace 只读磁盘，不经 AgentManager.openSession，避免抢占当前会话或启动模型运行时。
@@ -936,16 +938,15 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
-  const referenceService = (): LocalReferenceService => new LocalReferenceService({ projects: context.state.projects(), runtimeEntries: async (id) => {
-    const [projection, tools] = await Promise.all([context.agents.runtimeProjection(id), context.agents.toolCatalog(id)]);
-    return runtimeReferenceEntries(projection, tools);
-  } });
+  const referenceService = (): LocalReferenceService => new LocalReferenceService({ projects: context.state.projects(),
+    runtimeEntries: async (id, kind) => await context.agents.referenceEntries(id, kind) });
   handleRecoveryGated(desktopIpc.referenceKinds, async () => localReferenceKinds);
-  handleRecoveryGated(desktopIpc.referenceSearch, async (_event, projectId: unknown, query: unknown, kind: unknown, timeZone: unknown) => {
+  handleRecoveryGated(desktopIpc.referenceSearch, async (_event, projectId: unknown, query: unknown, kind: unknown, timeZone: unknown, scope: unknown) => {
     const service = referenceService();
     const selectedKind = z.enum(["date", "project", "file", "thread", "message", "memory", "snippet", "scratch", "skill", "agent", "mcp", "model", "provider", "tool", "tool-call", "task", "cron", "plan"]).optional().parse(kind);
     return await service.search(z.string().max(128).parse(query), idSchema.parse(projectId), selectedKind, 30,
-      z.string().min(1).max(100).optional().parse(timeZone));
+      z.string().min(1).max(100).optional().parse(timeZone),
+      z.object({ sessionId: idSchema.optional() }).optional().parse(scope));
   });
   handleRecoveryGated(desktopIpc.referenceResolve, async (_event, projectId: unknown, uri: unknown) => {
     const service = referenceService();

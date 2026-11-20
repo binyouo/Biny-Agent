@@ -11,6 +11,7 @@ import { deleteInterruptedTurn } from "./turnStore.js";
 import { RecipeStateStore } from "./recipes.js";
 import { deleteSessionFile, SessionNotFoundError } from "./store.js";
 import { SessionSearchIndex } from "./searchIndex.js";
+import { openSessionSummaryProjection } from "./summaryProjection.js";
 
 export async function deleteSessionArtifacts(persistenceRoot: string, sessionId: string): Promise<void> {
   // A failed canonical deletion must not strip a retained conversation's privacy
@@ -29,6 +30,11 @@ export async function deleteSessionArtifacts(persistenceRoot: string, sessionId:
   // and preserve the first error so a failed step cannot conceal remaining state.
   for (const step of [
     () => deleteSessionCatalogRecord(persistenceRoot, sessionId),
+    async () => {
+      const projection = await openSessionSummaryProjection(persistenceRoot, false);
+      try { projection?.forget(`${sessionId}.jsonl`); }
+      finally { projection?.close(); }
+    },
     () => deleteInterruptedTurn(persistenceRoot, sessionId),
     async () => await new RecipeStateStore(persistenceRoot).clear(sessionId),
     async () => await new SessionSearchIndex().forgetSession(sessionId, sourcePath
