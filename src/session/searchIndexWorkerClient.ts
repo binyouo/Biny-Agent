@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 
 interface PendingIndex {
@@ -61,7 +62,8 @@ class SessionSearchWorker {
 
   constructor(agentRoot: string) {
     const source = import.meta.url.endsWith(".ts");
-    const entry = new URL(source ? "./searchIndexWorker.ts" : "./searchIndexWorker.js", import.meta.url);
+    const bundledChunk = path.basename(path.dirname(fileURLToPath(import.meta.url))) === "chunks";
+    const entry = new URL(source ? "./searchIndexWorker.ts" : bundledChunk ? "../searchIndexWorker.js" : "./searchIndexWorker.js", import.meta.url);
     const workerUrl = source ? new URL(`data:text/javascript,${encodeURIComponent(
       `import { register } from ${JSON.stringify(import.meta.resolve("tsx/esm/api"))}; register(); await import(${JSON.stringify(entry.href)});`
     )}`) : entry;
