@@ -165,6 +165,7 @@ export async function* vercelAgentLoopContinue(
     state.streamFailure = undefined;
     state.directModelError = undefined;
     state.directAttempts = [];
+    state.toolResults.clear();
     state.outputProducedSinceStep = false;
     let stepResult: StepResult<ToolSet> | undefined;
     try {

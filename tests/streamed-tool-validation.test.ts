@@ -12,6 +12,7 @@ import { defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
+import { createWriteFileTool } from "../src/tools/file/writeFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import type { JsonObjectSchema } from "../src/tools/schema.js";
 import type { JSONSchema7, LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -142,11 +143,7 @@ for (const transport of ["direct", "compatible"] as const) {
       const run = fixture([{ id: "invalid-name", name, input: input! }], { transport });
       await run.done;
       assert.deepEqual(run.executions, []);
-      if (name === "Unavailable") assertRejectedWithinBudget(run);
-      else {
-        assert.equal(run.requests(), 1);
-        assert.equal(run.events.some(event => event.type === "error" && event.fatal), true);
-      }
+      assertRejectedWithinBudget(run);
     });
   }
 
@@ -425,8 +422,9 @@ for (const [label, input] of [
   }
 }
 
-test("direct repair keeps established unambiguous closed-schema alias and forbidden-extra behavior", async () => {
-  const result = await repairInput(closedParameters, { filepath: "fixture", count: "2", forbidden: true });
+test("direct repair accepts unambiguous aliases only when every field is accounted for", async () => {
+  assert.equal(await repairInput(closedParameters, { filepath: "fixture", count: "2", forbidden: true }), null);
+  const result = await repairInput(closedParameters, { filepath: "fixture", count: "2" });
   assert.ok(result);
   assert.deepEqual(JSON.parse(result.input), { path: "fixture", count: 2 });
 });
@@ -540,3 +538,45 @@ for (const transport of ["direct", "compatible"] as const) {
     });
   }
 }
+
+test("reused provider call ID cannot turn invalid arguments into a previous successful read", async () => {
+  let requests = 0;
+  const paths: unknown[] = [];
+  const tool: AgentTool = {
+    name: "Inspect", description: "Inspect one path",
+    parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false },
+    execute: async (_id, args) => { paths.push(args.path); return { content: [{ type: "text", text: "first-file contents" }] }; }
+  };
+  const model = testModel({ provider: "fixture", modelId: "fixture", async *stream(context) {
+    if (++requests < 3) {
+      yield { type: "tool-call", name: tool.name, id: "slot0", arguments: requests === 1 ? { path: "first" } : {} };
+      yield { type: "finish", reason: "tool-calls" };
+    } else {
+      const results = context.messages.filter(message => message.role === "toolResult");
+      assert.equal(results.length, 2);
+      assert.equal(results[1]?.isError, true);
+      assert.match(JSON.stringify(results[1]?.content), /not executed/iu);
+      assert.doesNotMatch(JSON.stringify(results[1]?.content), /first-file contents/u);
+      yield { type: "text-delta", text: "corrected" };
+      yield { type: "finish", reason: "stop" };
+    }
+  } });
+  for await (const event of vercelAgentLoopContinue({ messages: [{ role: "user", content: "Inspect" }], tools: [tool] },
+    { model, tools: [tool], maxSteps: 3, maxRetries: 0 })) {
+    if (event.type === "error") assert.fail(String(event.error));
+  }
+  assert.equal(requests, 3);
+  assert.deepEqual(paths, ["first"]);
+});
+
+test("Write with an unsupported dryRun flag never reaches execution", async () => {
+  const write = createWriteFileTool({ workspaceRoot: os.tmpdir(), ignore: [] });
+  let writes = 0;
+  const run = fixture([{ id: "preview", name: "Write", input: JSON.stringify({ path: "example.md", content: "draft", dryRun: true }) }], {
+    agentTool: { name: write.name, description: write.description, parameters: write.parameters,
+      execute: async () => { writes++; return { content: [] }; } }
+  });
+  await run.done;
+  assert.equal(writes, 0);
+  assert.ok(run.events.some(event => event.type === "turn_end" && event.toolResults.some(result => result.isError && JSON.stringify(result.content).includes("dryRun"))));
+});
