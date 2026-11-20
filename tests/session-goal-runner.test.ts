@@ -373,6 +373,54 @@ await withFixture(async fixture => {
   assert.equal(fixture.goals.get("tool-work")!.status, "active", "A working tool call permits continued goal work.");
 });
 
+// Calls with new targets, changed results or new user input each reset the window.
+for (const mode of ["failed", "succeeded", "script", "script-failure"] as const) {
+  const nested = mode === "script" || mode === "script-failure";
+  const failed = mode === "failed" || mode === "script-failure";
+  await withFixture(async fixture => {
+    const sid = "repeated-work";
+    const state = fixture.boundary(sid);
+    fixture.goals.set(sid, "Find the requested information");
+    fixture.runner.start();
+    await until(() => state.calls.length === 1);
+    state.finish();
+    const turns: Array<[string, string, string?]> = [
+      ["first", "first result"], ["first", "first result"],
+      ["second", "first result"], ["second", "first result"],
+      ["second", "new result"], ["second", "new result"],
+      ["second", "new result", "user correction"],
+      ["second", "new result"], ["second", "new result"], ["second", "new result"]
+    ];
+    if (mode === "script-failure") turns.unshift(["custom", "child error"], ["custom", "child error"], ["custom", "child error"]);
+    for (const [index, [path, content, correction]] of turns.entries()) {
+      await until(() => state.calls.length === index + 2 || fixture.goals.get(sid)!.status !== "active");
+      assert.equal(state.calls.length, index + 2);
+      const runId = state.calls.at(-1)!.runId!;
+      let sequence = 0;
+      const event = (kind: string, details: Record<string, unknown>) => fixture.authority.runEventTransaction({
+        eventId: runId + "-" + ++sequence, sessionId: sid, invocationId: runId, runId, turnId: runId, eventType: "session." + kind,
+        payload: { type: kind, ...details }
+      }, () => undefined);
+      if (correction) event("user_message", { content: correction });
+      const read = { tool: "Read", toolCallId: runId + "-read", auditOnly: nested };
+      const script = { tool: "run_script", toolCallId: runId + "-script" };
+      if (nested) event("tool_call", { ...script, args: { code: "return await tools.Read({path:'" + path + "'})" } });
+      event("tool_call", { ...read, args: { path }, parentToolCallId: nested ? script.toolCallId : undefined });
+      const childResult = failed ? { error: content, durationMs: index } : { content, durationMs: index };
+      event("tool_result", { ...read, executionStatus: failed ? "failed" : "succeeded", result: childResult });
+      if (nested) event("tool_result", { ...script, executionStatus: failed ? "failed" : "succeeded",
+        result: { ok: !failed, value: failed ? undefined : childResult,
+          error: failed ? "Nested Read failed: " + JSON.stringify(path === "custom" ? { error: "script error", durationMs: index } : childResult) : undefined,
+          operationId: runId, childCalls: [{ tool: "Read", toolCallId: read.toolCallId }] } });
+      state.finish(failed ? "incomplete" : "completed", "Inspecting the file.", failed ? "step_limit" : "model_stop");
+    }
+    await until(() => state.calls.length > turns.length + 1 || fixture.goals.get(sid)!.status === "paused");
+    assert.equal(state.calls.length, turns.length + 1);
+    assert.equal(fixture.goals.get(sid)!.status, "paused");
+    assert.match(fixture.goals.get(sid)!.evidence!.summary, /相同的工具结果/u);
+  });
+}
+
 await withFixture(async fixture => {
   const state = fixture.boundary("new-human-work");
   fixture.goals.set("new-human-work", "Use the latest correction"); fixture.runner.start();

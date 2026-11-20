@@ -22,6 +22,7 @@ let requests = 0;
 let hold = false;
 let noWork = false;
 let goalReadsOnly = false;
+let repeatMissingFile = false;
 let held: ServerResponse | undefined;
 const prompts: string[] = [];
 const userInputs: string[] = [];
@@ -48,12 +49,13 @@ const provider = createServer((request, response) => { void (async () => {
     ? { name, arguments: JSON.stringify(args) }
     : { name: "run_script", arguments: JSON.stringify({ description: "Run fixture workflow", code: `return await tools.${name}(${JSON.stringify(args)});` }) } }] });
   if (hold) { held = response; return; }
-  if (goalReadsOnly) {
+  if (goalReadsOnly || repeatMissingFile) {
     const lastConversationMessage = body.messages.filter(message => {
       const item = message as { role?: string; content?: unknown };
       return item.role !== "user" || !/<biny_(?:runtime|date)_context/u.test(JSON.stringify(item.content));
     }).at(-1) as { role?: string } | undefined;
     if (lastConversationMessage?.role === "tool") send(response, { content: "目标状态已核对，仍未产生工作证据。" });
+    else if (repeatMissingFile) send(response, call("Read", { path: "absent-goal-input.txt" }), "tool_calls");
     else send(response, call("Bash", { command: `${biny} goal show --json` }), "tool_calls");
     return;
   }
@@ -210,6 +212,17 @@ try {
   assert.equal(queryOnly.status, "paused", "Goal CLI reads must not keep an automatic goal spinning.");
   await goalOwnerClient.waitForIdle("goal-session");
   assert.equal(requests - beforeGoalReads, 4);
+
+  goalReadsOnly = false;
+  repeatMissingFile = true;
+  const beforeRepeat = requests;
+  await goalOwnerClient.request("session.goal.set", { sessionId: "goal-session", objective: "检查缺失的目标文件。" });
+  await goalOwnerClient.request("session.goal.resume", { sessionId: "goal-session" });
+  const repeated = await eventually(() => goalOwnerClient!.request<{ status: string; evidence?: { summary: string } }>("session.goal.get", { sessionId: "goal-session" }),
+    value => value.status === "paused" || requests - beforeRepeat > 10);
+  assert.equal(repeated.status, "paused", `Repeated missing file reads in ${executionMode} must pause`);
+  assert.match(repeated.evidence!.summary, /相同的工具结果/u);
+  await goalOwnerClient.waitForIdle("goal-session");
 
 } finally {
   await goalOwnerClient?.close();
