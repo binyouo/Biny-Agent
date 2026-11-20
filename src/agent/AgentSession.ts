@@ -432,6 +432,7 @@ export class AgentSession {
   private turnStore: TurnStore;
   private activeOperation: string | undefined;
   private activeRunMessageQueues: ActiveRunMessageQueues | undefined;
+  private readonly unavailableLifeContext = new WeakMap<SessionRecorder, Set<string>>();
   private readonly lingeringExternalTools = new Map<Promise<unknown>, { tool: string; toolCallId: string }>();
   private pendingSkillExtraction: Promise<void> = Promise.resolve();
   private readonly pendingMemoryTasks = new Set<Promise<unknown>>();
@@ -941,9 +942,29 @@ export class AgentSession {
   private async currentEmotionPrompt(now = new Date()): Promise<string | undefined> {
     const fatigue = await this.fatigueService.currentStatus();
     const blended = await this.emotionStorage.readBlended(this.recorder.sessionId, fatigue.fatigue, now);
+    const recorder = this.recorder;
     const album = new SelfieAlbum();
-    const [selfies, travel] = await Promise.all([album.list(), new TravelStorage().read()]);
-    return [renderEmotionPrompt(blended, fatigue), selfiePrompt(selfies.length, album.directory), travelPrompt(travel, now)].filter(Boolean).join("\n\n");
+    const optional = async (source: string, read: Promise<string>): Promise<string | undefined> => {
+      try {
+        const prompt = await read;
+        this.unavailableLifeContext.get(recorder)?.delete(source);
+        return prompt;
+      } catch {
+        if (recorder !== this.recorder || this.closed) return undefined;
+        const reported = this.unavailableLifeContext.get(recorder) ?? new Set<string>();
+        if (!reported.has(source)) {
+          reported.add(source);
+          this.unavailableLifeContext.set(recorder, reported);
+          recorder.record({ type: "error", message: `本地${source}状态读取失败，已省略对应上下文。` });
+        }
+        return undefined;
+      }
+    };
+    const [selfies, travel] = await Promise.all([
+      optional("自拍相册", album.list().then(files => selfiePrompt(files.length, album.directory))),
+      optional("旅行", new TravelStorage().read().then(state => travelPrompt(state, now)))
+    ]);
+    return [renderEmotionPrompt(blended, fatigue), selfies, travel].filter(Boolean).join("\n\n");
   }
 
   private async analyzeContextEmotion(sessionId: string, signal: AbortSignal, messageId?: string): Promise<void> {
