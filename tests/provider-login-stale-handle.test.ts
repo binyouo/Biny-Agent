@@ -180,7 +180,7 @@ test("source contracts: staging ownership, idempotent release and lazy TTL, not 
   assert.match(stage, /stagedSettingsCredentials\.set\(handle,[\s\S]*?return \{[\s\S]*?handle,[\s\S]*?finally \{\s*this\.modelLoginOperations\.delete\(authRequestId\);/u);
   const release = between(manager, "  releaseSettingsCredentials(", "  consumeSettingsCredentials(");
   assert.match(release, /\{\s*for \(const handle of handles\) this\.stagedSettingsCredentials\.delete\(handle\);\s*\}/u);
-  const cancel = between(manager, "  async cancelModelLogin(", "  /** 个性化总览");
+  const cancel = between(manager, "  async cancelModelLogin(", "  async personalizationOverview(");
   assert.doesNotMatch(cancel, /stagedSettingsCredentials|releaseSettingsCredentials/u);
   assert.match(manager, /const SETTINGS_CREDENTIAL_TTL_MS = 30 \* 60 \* 1000;/u);
   assert.equal(manager.split("this.pruneStagedSettingsCredentials();").length - 1, 2);
