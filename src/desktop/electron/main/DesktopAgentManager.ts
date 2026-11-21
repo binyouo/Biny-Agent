@@ -1,4 +1,4 @@
-import type { MaskRecord, MaskingOverview } from "../../../privacy/record.js";
+import { maskingOverview, type MaskRecord, type MaskingOverview } from "../../../privacy/record.js";
 import { TaskCommunication, type TaskInspection, type TaskInspectionOptions } from "../../../runtime/TaskCommunication.js";
 import { readAttachment } from "../../../attachments/store.js";
 /**
@@ -91,14 +91,19 @@ import {
   type SessionCatalogRecord
 } from "../../../session/catalog.js";
 import { readSessionEvents } from "../../../session/events.js";
+import type { LocalReferenceKind } from "../../../session/localReferences.js";
+import { runtimeReferenceEntries, type RuntimeReferenceEntry } from "../../../session/runtimeReferenceEntries.js";
 import { openRecipeSuggestions, recipeIds, RecipeStateStore, type RecipeId } from "../../../session/recipes.js";
 import { resolveSessionFile } from "../../../session/store.js";
 import { AutomationStore } from "../../../runtime/AutomationScheduler.js";
 import { RuntimeEventAuthority } from "../../../runtime/RuntimeAuthority.js";
 import {
   defaultChatPersonalizationOverride,
-  type AgentPersonalizationState,
-  type GlobalPersonalizationUpdate
+  formatPersonalizationState,
+  memoryPolicyPatch,
+  mergeChatPersonalizationOverride,
+  resolveChatPersonalization,
+  type AgentPersonalizationState
 } from "../../../personalization/index.js";
 import { activeRun, isTerminalRunEvent, pendingPermission, runtimeIsBusy, type AgentHostEvent, type AgentRuntimeUpdate, type InteractiveRuntimeSnapshot } from "../../../runtime/agentEvents.js";
 import { DurableTaskRunStore } from "../../../runtime/TaskRunStore.js";
@@ -520,29 +525,29 @@ export class DesktopAgentManager {
     return await this.projects.listSessionTreePage(project, this.runtimeSnapshots(projectId), this.projectEvents(projectId), options);
   }
 
-  async startDraft(projectId: string, isolation: "shared" | "worktree" = "shared"): Promise<DesktopWorkspaceSnapshot> {
-    await this.ensureDraftRuntime(projectId, isolation);
-    return await this.workspaceSnapshot(projectId);
+  async startDraft(projectId: string, isolation?: "shared" | "worktree"): Promise<DesktopWorkspaceSnapshot>;
+  async startDraft(projectId: string, isolation: "shared" | undefined, reuseWorkspace: true): Promise<undefined>;
+  async startDraft(projectId: string, isolation: "shared" | "worktree" = "shared", reuseWorkspace = false): Promise<DesktopWorkspaceSnapshot | undefined> {
+    this.projects.requireProject(projectId);
+    this.runtimeErrors.delete(projectId);
+    if (isolation === "worktree") await this.ensureWorktreeDraft(projectId);
+    else {
+      this.draftSessionIds.delete(projectId);
+      const runtime = this.residentRuntime(projectId)?.runtime;
+      const previous = runtime?.getFocusedSessionId();
+      if (runtime && previous !== undefined && runtime.getSnapshot(previous).state.kind === "idle") {
+        await runtime.releaseSessionClaim(previous);
+      }
+    }
+    return reuseWorkspace ? undefined : await this.workspaceSnapshot(projectId, false);
   }
 
-  /**
-   * 空闲 runtime 只切草稿、不销毁重建：MCP 连接、持久化 store、技能扫描等昂贵基础设施
-   * 全部保留，仅由 AgentSession.startNewSession 重置会话级状态。sendPrompt 等不需要
-   * 快照的调用方走这条轻量路径；startDraft 在此基础上补一份 workspaceSnapshot。
-   */
-  private async ensureDraftRuntime(projectId: string, isolation?: "shared" | "worktree"): Promise<void> {
-    // 清掉旧的初始化失败闩锁，让「新聊天」始终能作为重试入口。
-    this.runtimeErrors.delete(projectId);
-    const managed = isolation === "worktree" ? await this.ensureRuntime(projectId) : this.residentRuntime(projectId);
-    if (!managed) {
-      this.draftSessionIds.delete(projectId);
-      return;
-    }
+  private async ensureWorktreeDraft(projectId: string): Promise<void> {
+    const managed = await this.ensureRuntime(projectId);
     const existingDraftSessionId = this.draftSessionIds.get(projectId);
     if (existingDraftSessionId !== undefined) {
       const existingDraft = managed.runtime.runtimeSnapshots().find((entry) => entry.sessionId === existingDraftSessionId);
-      const matchesIsolation = existingDraft && (isolation === undefined
-        || (path.resolve(existingDraft.snapshot.info.workspaceRoot) !== path.resolve(this.projects.requireProject(projectId).path)) === (isolation === "worktree"));
+      const matchesIsolation = existingDraft && path.resolve(existingDraft.snapshot.info.workspaceRoot) !== path.resolve(this.projects.requireProject(projectId).path);
       if (existingDraft && !runtimeIsBusy(existingDraft.snapshot) && matchesIsolation) {
         await managed.runtime.focusSession(existingDraftSessionId);
         return;
@@ -554,7 +559,7 @@ export class DesktopAgentManager {
     const previousSnapshot = previousSessionId === undefined
       ? undefined
       : managed.runtime.getSnapshot(previousSessionId);
-    const info = await managed.runtime.startDraft(isolation);
+    const info = await managed.runtime.startDraft("worktree");
     if (previousSessionId !== undefined
       && previousSessionId !== info.sessionId && previousSnapshot?.state.kind === "idle") {
       await managed.runtime.releaseSessionClaim(previousSessionId);
@@ -694,13 +699,15 @@ export class DesktopAgentManager {
   async switchProjectBranch(projectId: string, branchName: string): Promise<DesktopWorkspaceSnapshot> {
     this.assertProjectGitMutationIdle(projectId);
     await this.projects.switchProjectBranch(projectId, branchName);
-    return await this.startDraft(projectId);
+    await this.startDraft(projectId, "shared", true);
+    return await this.workspaceSnapshot(projectId);
   }
 
   async createProjectBranch(projectId: string, branchName: string): Promise<DesktopWorkspaceSnapshot> {
     this.assertProjectGitMutationIdle(projectId);
     await this.projects.createProjectBranch(projectId, branchName);
-    return await this.startDraft(projectId);
+    await this.startDraft(projectId, "shared", true);
+    return await this.workspaceSnapshot(projectId);
   }
 
   async setProjectPinned(projectId: string, pinned: boolean): Promise<DesktopProject> {
@@ -1150,15 +1157,19 @@ export class DesktopAgentManager {
   }
 
   async maskingOverview(projectId: string): Promise<MaskingOverview> {
-    return await (await this.ensureRuntime(projectId)).runtime.maskingOverview();
+    this.projects.requireProject(projectId);
+    const managed = await this.getRuntime(projectId, false);
+    return managed ? await managed.runtime.maskingOverview() : maskingOverview([]);
   }
 
   async maskingDetail(projectId: string, id: string): Promise<MaskRecord | undefined> {
-    return await (await this.ensureRuntime(projectId)).runtime.maskingDetail(id);
+    this.projects.requireProject(projectId);
+    return await (await this.getRuntime(projectId, false))?.runtime.maskingDetail(id);
   }
 
   async clearMaskRecords(projectId: string): Promise<void> {
-    await (await this.ensureRuntime(projectId)).runtime.clearMaskRecords();
+    this.projects.requireProject(projectId);
+    await (await this.getRuntime(projectId, false))?.runtime.clearMaskRecords();
   }
 
   async settingsConfigSnapshot(projectId: string): Promise<DesktopSettingsConfigSnapshot>;
@@ -1683,13 +1694,9 @@ export class DesktopAgentManager {
     this.modelLogin.cancel(provider, authRequestId);
   }
 
-  /** 个性化总览：全局设置读取真实 global config，聊天有效值由当前 runtime 统一解析。 */
+  /** 用持久配置与指定会话的覆盖解析有效策略。 */
   async personalizationOverview(projectId: string, sessionId?: string): Promise<DesktopPersonalizationOverview> {
-    this.projects.requireProject(projectId);
-    const state = sessionId === undefined
-      ? await this.currentPersonalizationState(projectId)
-      : await this.personalizationState(projectId, sessionId);
-    return describePersonalizationOverview(state, sessionId);
+    return describePersonalizationOverview(await this.currentPersonalizationState(projectId, sessionId), sessionId);
   }
 
   async saveChatPersonalization(
@@ -1828,13 +1835,16 @@ export class DesktopAgentManager {
   }
 
   async saveMemorySettings(projectId: string, input: DesktopMemorySettingsInput): Promise<DesktopMemorySettingsSnapshot> {
-    this.projects.requireProject(projectId);
-    const state = await this.updateGlobalPersonalization(
-      projectId,
-      { memory: input.settings },
-      input.expectedRevision
-    );
-    return { configRevision: requireConfigRevision(state), settings: { ...state.memory } };
+    const project = this.projects.requireProject(projectId);
+    this.assertNoRunningTasks("任务运行期间不能修改个性化或记忆设置。");
+    const store = this.requireVersionedConfig();
+    const { config } = await store.loadVersioned(project.path);
+    const next = configSchema.parse({ ...config, context: { ...config.context, memory: input.settings },
+      needsEmbeddingRebuild: sameEmbeddingModel(config.context.memory.embeddingModel, input.settings.embeddingModel)
+        ? config.needsEmbeddingRebuild : true });
+    this.assertNoRunningTasks("任务运行期间不能修改个性化或记忆设置。");
+    const saved = await store.saveVersioned(next, input.expectedRevision, project.path);
+    return { configRevision: saved.revision, settings: { ...saved.config.context.memory } };
   }
 
   async identityOverview(projectId: string): Promise<DesktopIdentityOverview> {
@@ -2403,6 +2413,19 @@ export class DesktopAgentManager {
    * 与 TUI 相同），结果同样只进弹层、不写入会话。
    */
   async runSlashCommand(projectId: string, sessionId: string | undefined, input: string): Promise<DesktopSlashResult> {
+    const [command, action] = input.trim().split(/\s+/u);
+    if (command === "/memories") {
+      const patch = memoryPolicyPatch(action);
+      const current = await this.currentPersonalizationState(projectId, sessionId);
+      if (!patch) return { command, title: "Memories", content: formatPersonalizationState(current) };
+      if (sessionId === undefined) throw new Error("请在聊天输入框设置未发送草稿的记忆策略。");
+      const previousRevision = current.catalogRevision ?? SESSION_CATALOG_MISSING_REVISION;
+      const override = mergeChatPersonalizationOverride(current.override, patch);
+      const receipt = await this.saveChatPersonalization(projectId, sessionId, override, previousRevision);
+      const content = formatPersonalizationState({ override, resolved: resolveChatPersonalization(current.memory, override) });
+      return { command, title: "Memories", content: `${content}\n\nChanges apply from the next root turn.`,
+        chatMetadata: { receipt, previousRevision } };
+    }
     const operation = runtimeCommandOperation(input);
     if (operation?.startsWith("session.goal.") && sessionId === undefined && operation !== "session.goal.set") {
       if (operation === "session.goal.get" || operation === "session.goal.clear") return {
@@ -2513,6 +2536,22 @@ export class DesktopAgentManager {
     } finally {
       authority.close();
     }
+  }
+
+  async referenceEntries(projectId: string, kind?: LocalReferenceKind): Promise<RuntimeReferenceEntry[]> {
+    if (kind === "tool") return runtimeReferenceEntries({}, await this.toolCatalog(projectId));
+    const project = this.projects.requireProject(projectId);
+    const authority = await RuntimeEventAuthority.openReadOnly(project.path);
+    try {
+      const [tasks, automations, graphs, tools] = await Promise.all([
+        authority && (!kind || kind === "task") ? DurableTaskRunStore.open(project.path, authority) : undefined,
+        authority && (!kind || kind === "cron") ? AutomationStore.open(project.path, authority) : undefined,
+        authority && (!kind || kind === "plan") ? GoalGraphStore.open(project.path, authority) : undefined,
+        kind === undefined ? this.toolCatalog(projectId) : undefined
+      ]);
+      authority?.databaseHandle().exec("BEGIN");
+      return runtimeReferenceEntries({ tasks: tasks?.list({ order: "desc" }), automations: automations?.list(), graphs: graphs?.listGraphs() }, tools);
+    } finally { authority?.close(); }
   }
 
   private async readRuntimeProjection({ runtime }: ManagedRuntime): Promise<DesktopRuntimeProjection> {
@@ -2747,13 +2786,13 @@ export class DesktopAgentManager {
   }
 
   /** 后台派生刷新逐个容错，单个项目的 Host 异常不能阻止其它项目收敛到新配置。 */
-  private async rebuildIdleManagedRuntimesInBackground(change?: PreparedDesktopSettingsConfig): Promise<void> {
+  private async rebuildIdleManagedRuntimesInBackground(change: PreparedDesktopSettingsConfig): Promise<void> {
     const resident = [...this.runtimes.entries()];
     for (const [projectId, managed] of resident) {
       // 只处理快照中的原实例；并发导航若已经替换了它，不应误关新 Runtime。
       if (this.runtimes.get(projectId) !== managed || this.runtimeSnapshots(projectId).some((snapshot) => runtimeIsBusy(snapshot))) continue;
       const project = this.state.projects().find(candidate => candidate.id === projectId);
-      if (change && project && !configChangeRequiresRuntimeRestart(change.before, change.after, createProjectSkillKey(project.path))) continue;
+      if (project && !configChangeRequiresRuntimeRestart(change.before, change.after, createProjectSkillKey(project.path))) continue;
       try {
         await this.rebuildManagedRuntime(projectId, managed);
         this.runtimeErrors.delete(projectId);
@@ -2763,11 +2802,7 @@ export class DesktopAgentManager {
     }
   }
 
-  /**
-   * 全局即时设置只需先确认当前 Runtime 的写入；其它空闲实例的重建放到后台串行执行，
-   * 避免一个项目的 Host 重启把所有项目的开关点击拖成可见延迟。
-   */
-  private scheduleIdleManagedRuntimeRebuild(change?: PreparedDesktopSettingsConfig): void {
+  private scheduleIdleManagedRuntimeRebuild(change: PreparedDesktopSettingsConfig): void {
     const scheduled = this.idleRuntimeRebuildTail
       .catch(() => undefined)
       .then(async () => {
@@ -3006,48 +3041,22 @@ export class DesktopAgentManager {
     }
   }
 
-  private async personalizationState(projectId: string, sessionId: string): Promise<AgentPersonalizationState> {
-    const managed = await this.ensureRuntime(projectId);
-    await managed.runtime.ensureSession({ sessionId, focus: false });
-    return await managed.runtime.getPersonalizationState(sessionId);
-  }
-
-  private async currentPersonalizationState(projectId: string): Promise<AgentPersonalizationState> {
-    return await this.readManagedPersonalizationState(await this.ensureRuntime(projectId));
-  }
-
-  private async readManagedPersonalizationState(managed: ManagedRuntime): Promise<AgentPersonalizationState> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        return await managed.runtime.getPersonalizationState();
-      } catch (error) {
-        lastError = error;
-        // Host 启动时的记忆维护也会读取 config；loader 在校正文件权限时可能改变 ctime，
-        // 让两个只读请求之一得到瞬时快照冲突。这里只重试明确的只读竞态，不重试写操作。
-        if (attempt === 2 || !(error instanceof Error) || !error.message.includes("config.json changed while it was being read")) {
-          throw error;
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
-      }
-    }
-    throw lastError;
-  }
-
-  private async updateGlobalPersonalization(
-    projectId: string,
-    update: GlobalPersonalizationUpdate,
-    expectedRevision: string
-  ): Promise<AgentPersonalizationState> {
-    // 上一次全局设置提交后的空闲实例重建不能和本次 Runtime RPC 并发，
-    // 否则用户连续点击时可能正好撞上 Host 重启；首个点击仍不等待本次写入后的后台任务。
-    await this.idleRuntimeRebuildTail.catch(() => undefined);
-    this.assertNoRunningTasks("任务运行期间不能修改个性化或记忆设置。");
-    const managed = await this.ensureRuntime(projectId);
-    this.assertNoRunningTasks("任务运行期间不能修改个性化或记忆设置。");
-    const state = await managed.runtime.updateGlobalPersonalization(update, expectedRevision);
-    this.scheduleIdleManagedRuntimeRebuild();
-    return state;
+  private async currentPersonalizationState(projectId: string, sessionId?: string): Promise<AgentPersonalizationState> {
+    const project = this.projects.requireProject(projectId);
+    const [current, record] = await Promise.all([
+      this.requireVersionedConfig().loadVersioned(project.path),
+      sessionId === undefined ? undefined : readSessionCatalogRecord(project.path, sessionId)
+    ]);
+    if (sessionId !== undefined && record === undefined) await resolveSessionFile(project.path, `${sessionId}.jsonl`);
+    const override = record?.personalization ?? defaultChatPersonalizationOverride;
+    const memory = current.config.context.memory;
+    return {
+      memory,
+      override,
+      resolved: resolveChatPersonalization(memory, override),
+      catalogRevision: record === undefined ? SESSION_CATALOG_MISSING_REVISION : sessionCatalogRecordRevision(record),
+      configRevision: current.revision
+    };
   }
 
   private async runtimeForGlobalWrite(projectId: string, busyMessage: string): Promise<ManagedRuntime> {

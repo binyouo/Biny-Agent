@@ -266,7 +266,7 @@ test("live root search: empty bootstrap gains delivered rows without loading unr
   await h.settle(0, page("a", catalog("a").slice(32, 64), "a:catalog-v1:64"));
   assert.ok(h.searchTitles().includes("a history root-045"));
   assert.ok(!h.searchTitles().includes("a history root-070"));
-  assert.equal(paletteInput(h).value, ""); assert.equal(h.pages.length, 1); assert.deepEqual(h.scans, ["a"]);
+  assert.equal(paletteInput(h).value, ""); assert.equal(h.pages.length, 1); assert.deepEqual(h.scans, []);
 });
 
 test("live root search: closed palette stays closed and reopen uses delivered history", async t => {
@@ -275,7 +275,7 @@ test("live root search: closed palette stays closed and reopen uses delivered hi
   await h.settle(0, page("a", catalog("a").slice(32, 64), "a:catalog-v1:64"));
   assert.equal(h.document.querySelector('dialog[open]'), null); assert.deepEqual(h.scans, ["a"]);
   await h.search("a history root-045"); assert.deepEqual(h.searchTitles(), ["a history root-045"]);
-  assert.deepEqual(h.scans, ["a", "a"]); assert.deepEqual(h.opened, []);
+  assert.deepEqual(h.scans, ["a"]); assert.deepEqual(h.opened, []);
 });
 
 test("live root search: stale refresh-invalidated page cannot repopulate current results", async t => {

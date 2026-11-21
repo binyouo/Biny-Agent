@@ -72,20 +72,17 @@ test("摘要模型选择按操作读取，不重建 Runtime；压缩策略仍须
   }
 });
 
-test("记忆策略变更仍要求刷新驻留 Runtime", () => {
-  // 别想当然：AgentSession 确实是每轮现读 activeConfig，但桌面端只有**当前项目**
-  // 的 Runtime 会被推送新配置（DesktopAgentManager.updateGlobalPersonalization），
-  // 其它驻留项目拿不到。所以 memory 变更必须留在"需要重建"这一侧，
-  // 否则别的项目会静默保留旧的记忆策略。
-  const cases: Array<[string, (config: AgentConfig) => void]> = [
-    ["useMemories", (config) => { config.context.memory.useMemories = !config.context.memory.useMemories; }],
-    ["generateMemories", (config) => { config.context.memory.generateMemories = !config.context.memory.generateMemories; }],
-    ["sleepEnabled", (config) => { config.context.memory.sleepEnabled = !config.context.memory.sleepEnabled; }]
+test("每次消费时读取的记忆策略不重建驻留 Runtime", () => {
+  const cases: Array<(config: AgentConfig) => void> = [
+    config => { config.context.memory.enabled = !config.context.memory.enabled; },
+    config => { config.context.memory.useMemories = !config.context.memory.useMemories; },
+    config => { config.context.memory.generateMemories = !config.context.memory.generateMemories; },
+    config => { config.context.memory.sleepEnabled = !config.context.memory.sleepEnabled; }
   ];
-  for (const [name, mutate] of cases) {
+  for (const mutate of cases) {
     const [before, after] = withChange(mutate);
-    assert.notEqual(configDocumentRevision(after), configDocumentRevision(before), `${name} 应当改变 revision`);
-    assert.equal(configChangeRequiresRuntimeRestart(before, after), true, `${name} 应当要求刷新 Runtime`);
+    assert.notEqual(configDocumentRevision(after), configDocumentRevision(before));
+    assert.equal(configChangeRequiresRuntimeRestart(before, after), false);
   }
 });
 

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { localReferenceUri, parseLocalReferenceUri, type LocalReferenceResult, type LocalReferenceService } from "./localReferences.js";
+import { localReferenceUri, parseLocalReferenceUri, type LocalReferenceKind, type LocalReferenceResult, type LocalReferenceSearchScope, type LocalReferenceService } from "./localReferences.js";
 
 export interface LocalReferenceLink { sourceUri: string; targetUri: string; kind: "explicit" | "automatic" }
 
@@ -191,22 +191,36 @@ export class LocalReferenceGraph {
     parseLocalReferenceUri(uri);
     return this.open().prepare("DELETE FROM ref_pins WHERE project_id=? AND uri=?").run(projectId, uri).changes > 0;
   }
-  async pins(projectId: string, limit = 50): Promise<LocalReferenceResult[]> {
+  async pins(projectId: string, limit = 50, kind?: LocalReferenceKind, scope?: LocalReferenceSearchScope): Promise<LocalReferenceResult[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid pin limit.");
     const rows = this.open().prepare("SELECT uri FROM ref_pins WHERE project_id=? ORDER BY uri LIMIT ?")
       .all(projectId, limit) as Array<{ uri: string }>;
     const results: LocalReferenceResult[] = [];
     for (const row of rows) {
-      try { results.push(await this.service.resolve(row.uri, projectId)); } catch { /* 只显示当前可打开的固定引用。 */ }
+      try {
+        const ref = parseLocalReferenceUri(row.uri);
+        if (kind && ref.kind !== kind) continue;
+        if (scope && (ref.kind === "message" || ref.kind === "tool-call") && ref.threadId !== scope.sessionId) continue;
+        if (scope && ref.kind === "snippet") {
+          const source = this.open().prepare("SELECT source_uri FROM ref_snippets WHERE id=? AND project_id=?")
+            .get(ref.id, projectId) as { source_uri: string } | undefined;
+          if (!scope.sessionId || !source?.source_uri.startsWith(`${localReferenceUri({ kind: "thread", id: scope.sessionId })}/message/`)) continue;
+        }
+        results.push(await this.service.resolve(row.uri, projectId));
+      } catch { /* 只显示当前可打开的固定引用。 */ }
     }
     return results;
   }
 
-  async searchStored(query: string, projectId: string, kind: "snippet" | "scratch", limit = 30, now = new Date()): Promise<LocalReferenceResult[]> {
+  async searchStored(query: string, projectId: string, kind: "snippet" | "scratch", limit = 30, now = new Date(), scope?: LocalReferenceSearchScope): Promise<LocalReferenceResult[]> {
+    if (kind === "snippet" && scope && !scope.sessionId) return [];
     const table = kind === "snippet" ? "ref_snippets" : "ref_scratch";
     const field = kind === "snippet" ? "quote" : "content";
-    const rows = this.open().prepare(`SELECT id,${field} AS text FROM ${table} WHERE project_id=? ORDER BY id LIMIT 1000`)
-      .all(projectId) as Array<{ id: string; text: string }>;
+    const prefix = kind === "snippet" && scope?.sessionId
+      ? `${localReferenceUri({ kind: "thread", id: scope.sessionId })}/message/` : undefined;
+    const filter = prefix === undefined ? "" : " AND substr(source_uri,1,?)=?";
+    const rows = this.open().prepare(`SELECT id,${field} AS text FROM ${table} WHERE project_id=?${filter} ORDER BY id LIMIT 1000`)
+      .all(...(prefix === undefined ? [projectId] : [projectId, prefix.length, prefix])) as Array<{ id: string; text: string }>;
     const results: LocalReferenceResult[] = [];
     for (const row of rows) {
       if (!row.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())) continue;

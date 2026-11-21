@@ -1,6 +1,7 @@
 /** @ 补全只替换光标所在引用词，保留草稿两侧与中文输入法事件。 */
 import assert from "node:assert/strict";
-import { findReferenceCompletion, insertDraftReference, referenceKeyAction, referenceKindLabel, referenceResultSubtitle } from "../src/desktop/renderer/src/components/composer/referenceCompletion.js";
+import { findReferenceCompletion, insertDraftReference, referenceKeyAction, referenceKindLabel, referenceResultSubtitle,
+  suggestReferenceKinds } from "../src/desktop/renderer/src/components/composer/referenceCompletion.js";
 
 const value = "先看 @会话:周报 再安排";
 const position = value.indexOf(" 再");
@@ -12,6 +13,14 @@ assert.deepEqual(insertDraftReference(value, findReferenceCompletion(value, posi
 assert.equal(findReferenceCompletion("已有 @[标签](biny://thread/t1)", 6), undefined);
 assert.deepEqual(findReferenceCompletion("@未知:词", 5), { start: 0, end: 5, query: "词", kind: undefined, unknownPrefix: "未知" });
 assert.equal(findReferenceCompletion("@子代理:reviewer", 13)?.kind, "agent");
+assert.equal(findReferenceCompletion("@消息：周报", 6)?.kind, "message");
+assert.equal(findReferenceCompletion("@消息：周报", 6)?.query, "周报");
+assert.deepEqual(suggestReferenceKinds("fil"), ["file"]);
+const message = insertDraftReference("@", { start: 0, end: 1, query: "" },
+  { kind: "message", label: "多行]\n消息", uri: "biny://thread/t1/message/m1" }, []);
+assert.equal(message.value, "@多行 消息 ");
+assert.equal(message.tokens[0]?.uri, "biny://thread/t1/message/m1");
+assert.equal(findReferenceCompletion("@constructor:x", 14)?.unknownPrefix, "constructor");
 assert.equal(referenceKindLabel("thread"), "会话");
 assert.equal(referenceResultSubtitle({ kind: "date", label: "今天", uri: "biny://date/2026-09-25/2026-09-26/Asia%2FShanghai",
   content: JSON.stringify({ startDate: "2026-09-25", endDate: "2026-09-26", timeZone: "Asia/Shanghai" }) }),

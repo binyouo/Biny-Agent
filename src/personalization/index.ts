@@ -180,6 +180,23 @@ export function mergeChatPersonalizationOverride(
   });
 }
 
+export function memoryPolicyPatch(action: string | undefined): ChatPersonalizationOverridePatch | undefined {
+  if (action === undefined) return undefined;
+  if (action === "inherit") return { useMemories: "inherit", contributeMemories: "inherit" };
+  if (action === "both") return { useMemories: true, contributeMemories: true };
+  if (action === "use") return { useMemories: true, contributeMemories: false };
+  if (action === "contribute") return { useMemories: false, contributeMemories: true };
+  if (action === "off") return { useMemories: false, contributeMemories: false };
+  throw new Error("Usage: /memories [inherit|both|use|contribute|off]");
+}
+
+export function formatPersonalizationState({ resolved, override }: Pick<AgentPersonalizationState, "resolved" | "override">): string {
+  return [
+    `Use memories: ${resolved.useMemories ? "yes" : "no"} (override: ${String(override.useMemories)})`,
+    `Contribute memories: ${resolved.contributeMemories ? "yes" : "no"} (override: ${String(override.contributeMemories)})`
+  ].join("\n");
+}
+
 export function cloneChatPersonalizationOverride(
   override: ChatPersonalizationOverride
 ): ChatPersonalizationOverride {

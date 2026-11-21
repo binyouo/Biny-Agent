@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { readSessionEvents } from "../session/events.js";
+import type { SessionEvent } from "../session/recorder.js";
 import { replaySessionEvents } from "../session/replay.js";
 import { resolveContinuationPlan } from "../session/recoveryPlan.js";
 import type { CommandRuntime } from "./CommandRuntime.js";
@@ -165,9 +167,11 @@ export class SessionGoalRunner {
       }
       // 首次用户输入可留下一次续跑审计；自动回合的文字或状态查询不能无限触发下一轮。
       if (previous && payload?.stopReason !== "provider_error" && (previous.payload as { supervision?: boolean } | undefined)?.supervision === true) {
-        const latestRun = commands.runtimeAuthority.databaseHandle().prepare(`
-          SELECT run_id FROM agent_runs WHERE workspace_id = ? AND session_id = ? ORDER BY rowid DESC LIMIT 1
-        `).get(commands.runtimeAuthority.workspaceId, goal.sessionId) as { run_id: string } | undefined;
+        const recentRuns = commands.runtimeAuthority.databaseHandle().prepare(`
+          SELECT run_id, continuation_source, terminal_status, json_extract(payload_json, '$.supervision') AS supervision,
+                 json_extract(terminal_payload_json, '$.stopReason') AS stop_reason
+          FROM agent_runs WHERE workspace_id = ? AND session_id = ? ORDER BY rowid DESC LIMIT 3
+        `).all(commands.runtimeAuthority.workspaceId, goal.sessionId);
         const workTool = commands.runtimeAuthority.databaseHandle().prepare(`
           SELECT 1 FROM runtime_events AS call WHERE workspace_id = ? AND session_id = ? AND run_id = ?
             AND event_type = 'session.tool_call' AND json_extract(payload_json, '$.tool') NOT IN ('GoalGet', 'GoalUpdate')
@@ -178,12 +182,19 @@ export class SessionGoalRunner {
               AND json_extract(result.payload_json, '$.toolCallId') = json_extract(call.payload_json, '$.toolCallId')
               AND json_extract(result.payload_json, '$.result.goalControlOnly') = 1) LIMIT 1
         `).get(commands.runtimeAuthority.workspaceId, goal.sessionId, previous.runId);
-        if (latestRun?.run_id === previous.runId && !workTool) {
+        const repeated = workTool && recentRuns.length === 3 && recentRuns.every(run =>
+          run.continuation_source === source && run.supervision === 1 && (run.terminal_status === "completed" || run.terminal_status === "incomplete") && run.stop_reason !== "provider_error")
+          && this.repeatsObservedWork(commands, recentRuns.map(run => String(run.run_id)));
+        if (recentRuns[0]?.run_id === previous.runId && (!workTool || repeated)) {
           const current = this.current(goal);
           if (current) {
             commands.sessionGoals.pause(goal.sessionId, current, {
-              summary: "自动续跑仅产生文字或目标状态操作，已暂停以避免空转。检查原因或补充要求后可恢复目标。",
-              requirements: [{ requirement: "自动续跑需要工作工具活动", evidence: `回合 ${previous.runId} 已结束，未记录目标状态操作之外的新工作工具调用。` }]
+              summary: repeated
+                ? "连续三个自动回合得到相同的工具结果，目标已暂停。检查结果或补充要求后可恢复。"
+                : "自动续跑仅产生文字或目标状态操作，已暂停以避免空转。检查原因或补充要求后可恢复目标。",
+              requirements: [repeated
+                ? { requirement: "目标需要新的工作进展", evidence: `三个回合重复了相同的操作和结果：${recentRuns.map(run => run.run_id).join("、")}` }
+                : { requirement: "自动续跑需要工作工具活动", evidence: `回合 ${previous.runId} 已结束，未记录目标状态操作之外的新工作工具调用。` }]
             });
             this.options.onChange?.();
           }
@@ -215,6 +226,68 @@ export class SessionGoalRunner {
     });
   }
 
+  private repeatsObservedWork(commands: CommandRuntime, runIds: string[]): boolean {
+    const events = commands.runtimeAuthority.databaseHandle().prepare(`
+      SELECT payload_json FROM runtime_events WHERE workspace_id = ? AND run_id = ?
+        AND event_type IN ('session.user_message', 'session.tool_call', 'session.tool_result') ORDER BY sequence
+    `);
+    let previous: string | undefined;
+    for (const runId of runIds) {
+      // 按调用匹配返回值；调用 ID、宿主耗时不代表新观察，未结算操作也不能证明空转。
+      const pending = new Map<string, Extract<SessionEvent, { type: "tool_call" }>>();
+      const observed = new Map<string, unknown>();
+      const digest = createHash("sha256");
+      for (const row of events.iterate(commands.runtimeAuthority.workspaceId, runId)) {
+        const event = JSON.parse(String(row.payload_json)) as Extract<SessionEvent, { type: "user_message" | "tool_call" | "tool_result" }>;
+        if (event.type === "user_message") {
+          if (!event.auditOnly) return false;
+          continue;
+        }
+        if (event.tool === "GoalGet" || event.tool === "GoalUpdate") continue;
+        const id = event.toolCallId;
+        if (!id) return false;
+        if (event.type === "tool_call") {
+          if (pending.has(id)) return false;
+          pending.set(id, event);
+          continue;
+        }
+        const call = pending.get(id);
+        if (!call || call.tool !== event.tool) return false;
+        pending.delete(id);
+        let result = event.result;
+        if (result && typeof result === "object" && !Array.isArray(result)) {
+          const details = { ...result } as Record<string, unknown>;
+          if (details.goalControlOnly === true) continue;
+          if (details.archived === true) return false;
+          delete details.durationMs;
+          if (event.tool === "run_script") {
+            const children = details.childCalls;
+            if (!Array.isArray(children) || !children.every(child => child && observed.has(child.toolCallId))) return false;
+            if (details.value && typeof details.value === "object" && !Array.isArray(details.value)
+              && children.some(child => isDeepStrictEqual(details.value, observed.get(child.toolCallId)))) {
+              const value = { ...details.value } as Record<string, unknown>;
+              delete value.durationMs;
+              details.value = value;
+            }
+            if (typeof details.error === "string") details.error = comparableScriptError(details.error, children, observed);
+            delete details.operationId;
+            delete details.childCalls;
+          }
+          result = details;
+        }
+        if (event.executionStatus !== "failed" && !(event.executionStatus === "succeeded"
+          && ["Read", "Glob", "Grep", "run_script"].includes(event.tool))) return false;
+        observed.set(id, event.auditOnly ? event.result : undefined);
+        digest.update(JSON.stringify([event.tool, call.args, event.executionStatus, result]) + "\n");
+      }
+      if (pending.size || !observed.size) return false;
+      const signature = digest.digest("hex");
+      if (previous !== undefined && signature !== previous) return false;
+      previous = signature;
+    }
+    return true;
+  }
+
   private emptyTurns(commands: CommandRuntime, source: string, sessionId: string): number {
     const rows = commands.runtimeAuthority.databaseHandle().prepare(`
       SELECT terminal_payload_json FROM agent_runs WHERE workspace_id = ? AND session_id = ? AND continuation_source = ? ORDER BY rowid DESC LIMIT 3
@@ -227,6 +300,21 @@ export class SessionGoalRunner {
     }
     return count;
   }
+}
+
+// 只有能与已记录子调用逐字段核对的异常信封才能去除宿主耗时；脚本自定义异常必须保留。
+function comparableScriptError(error: string, children: Array<{ tool: string; toolCallId: string }>, observed: Map<string, unknown>): string {
+  const separator = error.indexOf(": {");
+  if (separator < 0) return error;
+  const prefix = error.slice(0, separator);
+  const matching = children.filter(child => prefix === `Nested ${child.tool} failed`);
+  if (!matching.length) return error;
+  let result: Record<string, unknown>;
+  try { result = JSON.parse(error.slice(separator + 2)); }
+  catch { return error; }
+  if (typeof result.durationMs !== "number" || !matching.some(child => isDeepStrictEqual(result, observed.get(child.toolCallId)))) return error;
+  delete result.durationMs;
+  return `${prefix}: ${JSON.stringify(result)}`;
 }
 
 function terminalReason(run: RuntimeRunRecord): string {

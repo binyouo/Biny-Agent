@@ -126,7 +126,7 @@ await testDesktopSettingsTransaction();
 await testDesktopToolModelSelection();
 await testDesktopGlobalWriteGateAndRuntimeRefresh();
 await testDesktopSettingsSaveReturnsBeforeRuntimeRefresh();
-await testDesktopGlobalPersonalizationRefreshesInBackground();
+await testDesktopGlobalPersonalizationDoesNotRebuildRuntimes();
 await testDesktopSettingsCredentialLifecycle();
 await testDesktopModelConfiguration();
 await testDesktopCustomProviderConnection();
@@ -1763,14 +1763,14 @@ async function testDesktopGlobalWriteGateAndRuntimeRefresh(): Promise<void> {
       expectedConfigRevision: before.revision,
       // 翻转一个布尔让 config 内容真正变化：revision 是内容哈希，settingsCommitted 仅在
       // before/target revision 不同时才触发派生 Runtime 重建。
-      memory: { ...before.memory, useMemories: !before.memory.useMemories }
+      compaction: { ...before.compaction, enabled: !before.compaction.enabled }
     });
     const transactionId = "global-runtime-refresh";
     await agents.commitSettingsConfig(prepared, transactionId);
     assert.deepEqual(rebuilt, [], "配置提交本身不应等待派生 Runtime 刷新");
     assert.equal(await agents.rollbackSettingsConfig(prepared, transactionId), "completed");
     assert.deepEqual(rebuilt, [], "未确认事务的补偿不通知驻留 Runtime");
-    assert.equal((await configStore.load(first.path)).context.memory.useMemories, before.memory.useMemories);
+    assert.equal((await configStore.load(first.path)).context.compaction.enabled, before.compaction.enabled);
 
     await agents.commitSettingsConfig(prepared, "confirmed-runtime-refresh");
     await agents.finalizeSettingsConfig(first.id, "confirmed-runtime-refresh");
@@ -1879,9 +1879,9 @@ async function testDesktopSettingsSaveReturnsBeforeRuntimeRefresh(): Promise<voi
       expectedConfigRevision: initial.configRevision,
       // 翻转一个布尔让 config 内容真正变化：只有 before/target revision 不同，
       // settingsCommitted 才会触发后台 Runtime 重建（本测试正是要观察那次重建）。
-      memory: {
-        ...initial.memory,
-        useMemories: !initial.memory.useMemories
+      compaction: {
+        ...initial.compaction,
+        enabled: !initial.compaction.enabled
       }
     });
     assert.equal(result.status, "committed", JSON.stringify(result));
@@ -1906,13 +1906,12 @@ async function testDesktopSettingsSaveReturnsBeforeRuntimeRefresh(): Promise<voi
   }
 }
 
-async function testDesktopGlobalPersonalizationRefreshesInBackground(): Promise<void> {
+async function testDesktopGlobalPersonalizationDoesNotRebuildRuntimes(): Promise<void> {
   const firstRoot = await mkdtemp(path.join(os.tmpdir(), "biny-global-personalization-first-"));
   const secondRoot = await mkdtemp(path.join(os.tmpdir(), "biny-global-personalization-second-"));
   const desktopRoot = await mkdtemp(path.join(os.tmpdir(), "biny-global-personalization-data-"));
   const previousHostEntry = process.env.BINY_RUNTIME_HOST_ENTRY;
   let agents: DesktopAgentManager | undefined;
-  let releaseRebuild: () => void = () => undefined;
   try {
     process.env.BINY_RUNTIME_HOST_ENTRY = path.join(desktopRoot, "missing-runtime-host-entry.js");
     const { configStore, projects, state } = await createDesktopTestServices(desktopRoot);
@@ -1927,13 +1926,8 @@ async function testDesktopGlobalPersonalizationRefreshesInBackground(): Promise<
       idleRuntimeRebuildTail: Promise<void>;
     };
     const rebuilt: string[] = [];
-    let resolveRebuildStarted: () => void = () => undefined;
-    const rebuildStarted = new Promise<void>((resolve) => { resolveRebuildStarted = resolve; });
-    const rebuildGate = new Promise<void>((resolve) => { releaseRebuild = resolve; });
-    internals.rebuildManagedRuntime = async (projectId: string, _managed: unknown): Promise<void> => {
+    internals.rebuildManagedRuntime = async (projectId: string): Promise<void> => {
       rebuilt.push(projectId);
-      resolveRebuildStarted();
-      await rebuildGate;
     };
 
     const initial = await agents.personalizationOverview(first.id);
@@ -1942,18 +1936,10 @@ async function testDesktopGlobalPersonalizationRefreshesInBackground(): Promise<
       settings: { ...initial.memory, useMemories: !initial.memory.useMemories }
     });
     assert.equal(saved.settings.useMemories, !initial.memory.useMemories);
-    assert.deepEqual(rebuilt, [], "全局记忆设置返回前不应等待空闲 Runtime 重建");
-
-    await Promise.race([
-      rebuildStarted,
-      new Promise<void>((resolve) => setTimeout(resolve, 1_000))
-    ]);
-    assert.deepEqual(rebuilt, [first.id], "设置返回后才开始后台重建当前空闲 Runtime");
-    releaseRebuild();
     await internals.idleRuntimeRebuildTail;
-    assert.deepEqual(new Set(rebuilt), new Set([first.id, second.id]));
+    assert.deepEqual(rebuilt, [], "记忆开关在回执后也不能重建驻留 Runtime");
+    assert.equal((await agents.personalizationOverview(second.id)).memory.useMemories, saved.settings.useMemories);
   } finally {
-    releaseRebuild();
     await agents?.closeAll();
     if (previousHostEntry === undefined) delete process.env.BINY_RUNTIME_HOST_ENTRY;
     else process.env.BINY_RUNTIME_HOST_ENTRY = previousHostEntry;

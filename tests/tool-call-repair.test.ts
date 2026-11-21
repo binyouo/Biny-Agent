@@ -100,14 +100,13 @@ assert.deepEqual(JSON.parse(booleanCoerced?.input ?? ""), { path: "a", old_strin
 const enumFixed = await repair("Edit", '{"path":"a","operation":"Update","old_string":"x","new_string":"y"}', inputError("Edit", '{"path":"a","operation":"Update","old_string":"x","new_string":"y"}'));
 assert.deepEqual(JSON.parse(enumFixed?.input ?? ""), { path: "a", operation: "update", old_string: "x", new_string: "y" });
 
-const unmappedDropped = await repair("Read", '{"path":"notes.md","bogus":1}', inputError("Read", '{"path":"notes.md","bogus":1}'));
-assert.deepEqual(JSON.parse(unmappedDropped?.input ?? ""), { path: "notes.md" });
+const unmapped = await repair("Read", '{"path":"notes.md","bogus":1}', inputError("Read", '{"path":"notes.md","bogus":1}'));
+assert.equal(unmapped, null);
 
-// 无法恢复的字符串参数且名字未变时放弃修复；名字归一化修复仍可单独成立并回退为空对象参数。
+// 未能解析的参数不能在工具改名时被替换为空对象。
 assert.equal(await repair("Read", "not json", inputError("Read", "not json")), null);
 const renamedOnly = await repair("BASH", "not json", new NoSuchToolError({ toolName: "BASH" }));
-assert.equal(renamedOnly?.toolName, "Bash");
-assert.deepEqual(JSON.parse(renamedOnly?.input ?? "{}"), {});
+assert.equal(renamedOnly, null);
 
 // 无需修复的调用返回 null，避免无谓重建。
 assert.equal(await repair("Read", '{"path":"notes.md"}', inputError("Read", '{"path":"notes.md"}')), null);

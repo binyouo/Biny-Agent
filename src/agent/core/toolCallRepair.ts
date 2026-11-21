@@ -92,7 +92,7 @@ function repairToolName(name: string, available: readonly string[]): string | un
 
 function repairToolArguments(schema: unknown, rawInput: unknown): RepairedArguments | null {
   const recovered = recoverObjectInput(rawInput);
-  if (recovered === null) return { input: {}, changed: false };
+  if (recovered === null) return null;
   const { value: input, recovered: inputRecovered } = recovered;
   // 模式键或组合条件可能允许 properties 以外的字段；此处不重新解释这些 schema。
   if (isRecord(schema) && [
@@ -109,11 +109,11 @@ function repairToolArguments(schema: unknown, rawInput: unknown): RepairedArgume
     const normalized = normalizeName(key);
     canonicalByKey.set(normalized, [...(canonicalByKey.get(normalized) ?? []), key]);
   }
-  const repaired: Record<string, unknown> = {};
+  const repaired: Record<string, unknown> = Object.create(null);
   let changed = inputRecovered;
   for (const [key, value] of Object.entries(input)) {
     // 开放对象允许额外字段；包括看起来像别名的键，也必须原样保留其含义。
-    if (key in properties || !isRecord(schema) || schema.additionalProperties !== false) {
+    if (Object.hasOwn(properties, key) || !isRecord(schema) || schema.additionalProperties !== false) {
       repaired[key] = value;
       continue;
     }
@@ -122,12 +122,8 @@ function repairToolArguments(schema: unknown, rawInput: unknown): RepairedArgume
         .flatMap((candidate) => canonicalByKey.get(normalizeName(candidate)) ?? []);
     if (candidates.length > 1) return null;
     const canonical = candidates[0];
-    // 只有封闭对象才能丢弃无法映射的键；别名与规范键或其他别名冲突时不能猜测。
-    if (canonical === undefined) {
-      changed = true;
-      continue;
-    }
-    if (Object.hasOwn(input, canonical) || Object.hasOwn(repaired, canonical)) return null;
+    // 未知字段可能表达执行限制；不能丢弃后再执行。
+    if (canonical === undefined || Object.hasOwn(input, canonical) || Object.hasOwn(repaired, canonical)) return null;
     repaired[canonical] = value;
     changed = true;
   }

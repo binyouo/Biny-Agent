@@ -3,7 +3,7 @@ import { testModel } from "./helpers/model.js";
 import { IdentityStorage } from "../src/agent/context/identityStorage.js";
 import { TravelStorage } from "../src/agent/context/travel.js";
 import assert from "node:assert/strict";
-import { mkdtemp, } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,6 +16,7 @@ import type { AgentModel, ModelStreamContext } from "../src/agent/core/types.js"
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
+import { readSessionEvents } from "../src/session/events.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
@@ -177,4 +178,48 @@ test("conversation retains each turn's mood through later turns and session resu
     if (previous === undefined) delete process.env[BINY_AGENT_DIR_ENV]; else process.env[BINY_AGENT_DIR_ENV] = previous;
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("an unreadable travel snapshot does not fail a coding question or hide the available album", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-travel-context-"));
+  const previous = process.env[BINY_AGENT_DIR_ENV];
+  process.env[BINY_AGENT_DIR_ENV] = path.join(root, "state");
+  await ensureAgentDirs(root);
+  const config = structuredClone(defaultConfig);
+  config.context.memory.useMemories = false;
+  config.context.memory.generateMemories = false;
+  const requests: ModelStreamContext[] = [];
+  const model = testModel({ provider: "fixture", modelId: "fixture", async *stream(context) {
+    requests.push(context);
+    yield { type: "text-delta", text: "map returns a new array" };
+    yield { type: "finish", reason: "stop" };
+  } });
+  const recorder = new SessionRecorder(root);
+  const agent = new AgentSession({ workspaceRoot: root, config, model, toolRegistry: new ToolRegistry(),
+    permissionManager: new PermissionManager(config.permission), recorder });
+  t.after(async () => {
+    await agent.close();
+    if (previous === undefined) delete process.env[BINY_AGENT_DIR_ENV]; else process.env[BINY_AGENT_DIR_ENV] = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  await agent.initialize();
+  const travel = new TravelStorage();
+  await mkdir(travel.directory, { recursive: true });
+  await writeFile(path.join(travel.directory, "status.json"), "{");
+  const outcome = await agent.runTask("Explain Array.map", { emotionAnalysis: false, capabilitySelection: { tools: "none", skills: "none" } });
+  assert.equal(outcome.status, "completed", outcome.error);
+  assert.equal(outcome.output, "map returns a new array");
+  assert.equal(requests.length, 1);
+  assert.match(JSON.stringify(requests[0]), /SELFIE ALBUM/u);
+  await recorder.flush();
+  assert.equal((await readSessionEvents(recorder.filePath)).filter(event => event.type === "error" && event.message.includes("本地旅行")).length, 1);
+  assert.equal(await readFile(path.join(travel.directory, "status.json"), "utf8"), "{");
+  await unlink(path.join(travel.directory, "status.json"));
+  await travel.change("go", "Kyoto");
+  await writeFile(path.join(process.env[BINY_AGENT_DIR_ENV]!, "selfies"), "not a directory");
+  const next = await agent.runTask("Explain Array.map again", { emotionAnalysis: false, capabilitySelection: { tools: "none", skills: "none" } });
+  assert.equal(next.status, "completed", next.error);
+  assert.match(JSON.stringify(requests.at(-1)), /currently in Kyoto/u);
+  await recorder.flush();
+  assert.equal((await readSessionEvents(recorder.filePath)).filter(event => event.type === "error" && event.message.includes("本地自拍相册")).length, 1);
 });

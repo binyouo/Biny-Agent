@@ -70,16 +70,7 @@ function stableJson(value: unknown): string {
  * 反过来记更容易：不在这个清单里的字段，是 main 侧即时读取的交互偏好
  * （appshots 热键、computer 显示偏好、活动记录等），改它们不用碰 Runtime。
  *
- * ⚠️ **`context` 必须在清单里**，尽管 AgentSession 是每轮现读 `activeConfig`：
- * 桌面端保存设置时，只有**当前项目**的 Runtime 会被推送新配置
- * （见 DesktopAgentManager.updateGlobalPersonalization），其它驻留项目拿不到，
- * 而它自己在推送之后仍然调 `scheduleIdleManagedRuntimeRebuild()`
- * —— 那一步就是为了让其它项目的 Runtime 也跟上。
- * 所以把 `context` 排除出去，会让别的项目静默保留旧的记忆/压缩策略。
- *
- * 同理，任何"某个 Runtime 里被热更新、但别的 Runtime 没有"的字段都必须留在这里。
- * 往清单外挪字段之前，先确认**所有**驻留 Runtime 都能拿到新值。压缩摘要模型选择
- * 在新 root turn 与手动压缩入口读取，下面仅排除这一字段；其它压缩策略仍在构造时固定。
+ * `context` 中的压缩策略和工作区指令上限在构造时绑定；只排除各消费入口自行读取的字段。
  */
 const RESTART_RELEVANT_CONFIG_FIELDS: readonly string[] = [
   "format",
@@ -111,6 +102,8 @@ export function restartRelevantConfig(config: AgentConfig, skillProjectKey?: str
     if (!RESTART_RELEVANT_CONFIG_FIELDS.includes(key)) delete projection[key];
   }
   delete (projection.context as AgentConfig["context"]).compaction.summaryModel;
+  // 新回合、显式记忆操作和 Memory owner 每次读取持久策略。
+  delete (projection.context as Partial<AgentConfig["context"]>).memory;
   // 图标和选择器可见性由客户端展示快照读取，不改变 Provider 请求或 Agent 执行。
   for (const provider of Object.values(projection.providers as AgentConfig["providers"])) {
     delete provider.icon;

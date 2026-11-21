@@ -635,14 +635,12 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
   /** 可见会话的最新运行；只读查询不修复或猜测失联进程的终态。 */
   latestSessionRuns(sessionIds: readonly string[]): Map<string, RuntimeRunRecord> {
     this.assertOpen();
-    const result = new Map<string, RuntimeRunRecord>();
-    const query = this.database.prepare(`SELECT * FROM agent_runs
-      WHERE workspace_id = ? AND session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`);
-    for (const sessionId of new Set(sessionIds)) {
-      const row = query.get(this.workspaceId, sessionId) as unknown as RuntimeRunRow | undefined;
-      if (row) result.set(sessionId, toRuntimeRun(row));
-    }
-    return result;
+    const rows = this.database.prepare(`SELECT run.* FROM json_each(?) AS wanted
+      JOIN agent_runs AS run ON run.rowid = (
+        SELECT rowid FROM agent_runs WHERE workspace_id = ? AND session_id = wanted.value
+        ORDER BY created_at DESC, rowid DESC LIMIT 1
+      ) ORDER BY wanted.key`).all(JSON.stringify([...new Set(sessionIds)]), this.workspaceId) as unknown as RuntimeRunRow[];
+    return new Map(rows.map(row => [String(row.session_id), toRuntimeRun(row)]));
   }
 
   static async readLatestSessionRuns(persistenceRoot: string, sessionIds: readonly string[]): Promise<Map<string, RuntimeRunRecord>> {
