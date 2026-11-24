@@ -54,19 +54,19 @@ CLI 帮助：`pnpm dev -- --help`。
 完整阅读入口见 [文档索引](docs/README.md)。
 
 - [CLI 使用指南](docs/CLI_USAGE.md) — 命令地图、配置、会话、项目、预览与终端操作。
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — 服务商、模型别名、凭据与项目设置。
+- [模型与配置](docs/CONFIGURATION.md) — 服务商、模型别名、凭据与项目设置。
 - [隐私脱敏](docs/PRIVACY.md) — 发送前替换、回复还原，以及缓存与本地数据边界。
-- [docs/SESSIONS.md](docs/SESSIONS.md) — 对话入口、会话恢复、分支与导入导出。
-- [docs/IMPORTS.md](docs/IMPORTS.md) — 从其他应用导入模型、MCP 与会话，管理同步和历史。
-- [docs/MEMORY.md](docs/MEMORY.md) — 长期事实的写入、召回、整理与管理。
-- [docs/PERMISSIONS.md](docs/PERMISSIONS.md) — 工具权限模式、沙箱与应用授权边界。
-- [docs/EXTENSIONS.md](docs/EXTENSIONS.md) — MCP、Skills、Plugins 与子代理。
-- [docs/BROWSER.md](docs/BROWSER.md) — 内置浏览器与 Chrome 标签连接。
-- [docs/COMPUTER_USE.md](docs/COMPUTER_USE.md) — macOS 权限、应用审批、窗口镜像与外部 MCP。
-- [docs/ACTIVITY.md](docs/ACTIVITY.md) — 桌面采集、OCR、活动分析、工作日记与 Appshots。
-- [docs/AUTOMATION.md](docs/AUTOMATION.md) — 会话目标、任务图与定时执行。
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 运行链路、模块职责与本地状态。
-- [docs/EVALUATION.md](docs/EVALUATION.md) — 实现检查、模型评测与成绩口径。
+- [会话与恢复](docs/SESSIONS.md) — 对话入口、会话恢复、分支与导入导出。
+- [从其他应用导入](docs/IMPORTS.md) — 从其他应用导入模型、MCP 与会话，管理同步和历史。
+- [长期记忆](docs/MEMORY.md) — 长期事实的写入、召回、整理与管理。
+- [工具与权限](docs/PERMISSIONS.md) — 工具权限模式、沙箱与应用授权边界。
+- [MCP、Skills 与插件](docs/EXTENSIONS.md) — MCP、Skills、Plugins 与子代理。
+- [浏览器](docs/BROWSER.md) — 内置浏览器与 Chrome 标签连接。
+- [Computer Use](docs/COMPUTER_USE.md) — macOS 权限、应用审批、窗口镜像与外部 MCP。
+- [活动记录与 Appshots](docs/ACTIVITY.md) — 桌面采集、OCR、活动分析、工作日记与 Appshots。
+- [目标与自动化](docs/AUTOMATION.md) — 会话目标、任务图与定时执行。
+- [架构](docs/ARCHITECTURE.md) — 运行链路、模块职责与本地状态。
+- [评测](docs/EVALUATION.md) — 实现检查、模型评测与成绩口径。
 
 ## 贡献与安全
 

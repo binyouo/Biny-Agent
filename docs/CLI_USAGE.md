@@ -1,10 +1,10 @@
 # CLI 使用指南
 
-Biny 的命令行可以启动对话、执行任务，以及直接管理已有的配置、会话、记忆和项目能力。完整阅读入口见[文档索引](README.md)；开发新命令时参阅 [CLI 开发规范](CLI.md)。
+Biny 命令行提供对话启动、任务批处理，以及对配置、会话、长期记忆与本地环境能力的直接管理。完整文档索引见 [文档索引](README.md)；开发新命令时请参阅 [CLI 开发规范](CLI.md)。
 
 ## 启动与帮助
 
-在源码仓库构建并链接命令，然后切到需要操作的项目目录：
+在源码仓库构建并全局链接命令，然后切换至目标项目目录：
 
 ```bash
 pnpm build:cli
@@ -13,38 +13,40 @@ cd /path/to/project
 biny --help
 ```
 
-仓库开发时可用 `pnpm dev -- <命令>`。更新源码后重新构建 CLI；依赖 Desktop 的新命令还需要构建并重启 Desktop，已有应用进程不会因构建自动更新。
+在源码开发环境下，可通过 `pnpm dev -- <命令>` 直接调用。修改源码后需重新构建 CLI；若涉及依赖 Desktop 的新命令，还需重新构建并重启 Desktop 桌面端。
+
+常用快捷启动：
 
 ```bash
-biny                                  # 新建终端对话
-biny resume                           # 选择历史会话
-biny run "检查项目并说明结果" --headless
-biny memory --help
-biny session compact --help
+biny                                  # 在当前项目开启交互式终端对话
+biny resume                           # 调出会话列表并恢复历史
+biny run "检查项目结构并说明结果" --headless # 非交互式执行任务
+biny memory --help                    # 查看记忆管理命令帮助
+biny session compact --help           # 查看会话压缩帮助
 ```
 
-命令按 `biny <模块> <操作>` 组织。尖括号参数如 `<session-id>` 需要替换；含空格或换行的文本作为一个加引号的参数传入。具体参数以当前命令的 `--help` 为准。
+- **命令结构**：统一遵循 `biny <模块> <操作> [参数]`。
+- **参数约定**：尖括号 `<session-id>` 表示必填占位符；包含空格或换行的内容须使用引号包裹。各项操作具体参数可通过 `--help` 查询。
 
 ## 命令在哪里执行
 
-`run`、`chat`、`tui` 的 Agent 执行统一连接或启动 Runtime Host，连接失败直接报错。`run --isolated` 可与模型覆盖、截止时间和验收契约一起使用。`memory serve` 和静态 `graph create/start` 已移除；记忆管理及监督式 plan 保留。
+Agent 对话与执行（`run`、`chat`、`tui`）统一连接或拉起本机的 Runtime Host，连接失败时直接报错退出。`run --isolated` 支持与模型覆盖、任务限时及验收规则配合使用。
 
-工作区由执行命令时的当前目录决定。全局配置和用户资料由配置目录管理；项目登记、主题、预览和内嵌终端属于 Desktop；运行中的会话属于 Runtime Host。
+* **工作区定位**：当前工作区由执行命令时的 Shell 当前目录决定。
+* **数据归属**：全局配置与用户画像保存在配置目录；项目登记、主题偏好、本地预览与嵌入终端归属 Desktop；活跃会话由 Runtime Host 维护。
 
-| 命令 | 执行条件 |
+| 命令域 | 执行前置条件与运行时依赖 |
 | --- | --- |
-| `config`、`provider`、`model` | 使用共享全局配置存储；配置目录有 Desktop 加密凭据时通过正在运行的 Desktop 读取和保存。 |
-| `user`、`agent` | 直接使用本地用户资料和具名子代理定义，无需启动模型。 |
-| `project`、会话元数据管理与复制、`preview`、`terminal` | 需要正在运行的 Desktop，操作它管理的同一份状态。 |
-| `config get/set themePreference/fontPreference` | 需要 Desktop，通过现有偏好存储保存并刷新外观。 |
-| `session create/usage/compact`、`tool list/call` | 连接当前工作区已有的 Host；创建以外的操作需要指定会话，不为查询或调用启动新 Host。 |
-| `session messages/search`、`usage` | 读取本地持久记录，无需启动 Host 或模型。 |
-| `iab` | 需要 Desktop 的内置浏览器。 |
-| `remote run` | 在当前项目启动前台加密连接，输出供原生移动端使用的配对链接。见[手机远程访问](REMOTE.md)。 |
+| `config`、`provider`、`model` | 使用共享的全局配置存储；配置目录包含 Desktop 安全凭据时，经由运行中的 Desktop 安全读写。 |
+| `user`、`agent` | 直接读取与修改本地用户资料与具名子代理 Markdown 定义，无需加载大模型。 |
+| `project`、会话元数据（重命名/置顶/归档/复制/删除）、`preview`、`terminal` | 依赖运行中的 Desktop，共同维护同一份桌面状态。 |
+| `config get/set themePreference/fontPreference` | 依赖 Desktop，修改偏好存储并即时刷新界面外观。 |
+| `session create/usage/compact`、`tool list/call` | 连接当前工作区活跃的 Host；除新建会话外均需显式指定会话 ID，不无故启动新 Host。 |
+| `session messages/search`、`usage` | 直接读取本地持久化 JSONL / SQLite 记录，无需启动 Host 或模型。 |
+| `iab` | 依赖 Desktop 运行中的内置浏览器服务。 |
+| `remote run` | 在当前项目启动前台加密中继，生成原生移动端配对二维码与链接，详见 [手机远程访问](REMOTE.md)。 |
 
-其他命令的启动方式和限制见对应专题。`BINY_AGENT_DIR` 可同时重定向配置和运行数据；访问同一份数据的 Desktop、Host 与 CLI 必须使用相同值。
-
-一次性命令的 `--json` 用于脚本读取，结果写入 stdout。本文的新增管理命令失败时写 stderr 并返回非零退出码；不要只凭 stdout 非空判断成功。部分现有控制命令在 JSON 模式返回错误对象，同样需要检查退出码。
+环境变量 `BINY_AGENT_DIR` 可统一重定向配置与运行数据目录；访问同一数据的 Desktop、Host 与 CLI 须保持该变量一致。脚本调用时传 `--json` 会将结构化结果输出至 stdout，失败信息写入 stderr 并返回非零退出码。
 
 ## 配置、Provider 与模型
 
@@ -59,11 +61,9 @@ biny model list --provider example --json
 biny model set <model-alias> --json
 ```
 
-这些配置命令读取、修改**全局配置**，不把当前项目的覆盖写回全局。`config set` 的值优先按 JSON 解析，例如 `true`、`45`、`null` 或完整对象；其他文本作为字符串。输入须满足所属配置字段的类型和约束，非法输入不会保存。查询结果中的密钥等敏感字段会打码。 `config get` 成功读取到尚未赋值的可选字段时，以 JSON `null` 表示没有值，紧凑和缩进输出一致；不存在的配置路径仍报错，不会当作 `null` 返回。
-
-`model list` 合并已配置别名和有效的本地模型目录缓存，不主动请求在线目录；`model set` 使用列表中的别名，复用模型选择的解析、凭据与配置校验。它修改全局默认模型；项目的 `.biny/settings.json` 若声明了自己的 `defaultModel`，该项目继续使用项目覆盖。`run --model` 是本次运行的覆盖，作用范围不同。
-
-新增连接时将 Provider 配置写入 JSON 文件。例如 `provider.json`：
+- **全局配置读写**：`config get/set` 读写全局配置文件，不改写当前项目的局部覆盖。`config set` 输入优先按 JSON 类型解析（如 `true`、`45`、`null` 或对象）；查询结果中的密钥等敏感信息自动打码脱敏。
+- **模型管理**：`model list` 整合已配置别名与本地模型目录缓存；`model set <alias>` 设置全局默认模型。若项目 `.biny/settings.json` 单独指定了 `defaultModel`，则当前项目优先遵循项目覆盖。
+- **添加 Provider 连接**：编写配置文件（例如 `provider.json`）并执行导入：
 
 ```json
 {
@@ -78,17 +78,15 @@ biny provider add example --file provider.json --json
 biny provider remove example --json
 ```
 
-`add` 不覆盖同名连接；连接仍被模型别名引用时，`remove` 会报告配置错误并保留原配置。添加连接本身不等于已获取模型目录或服务已可用。不同 Provider 的真实字段、凭据存储与项目覆盖见[模型与配置](CONFIGURATION.md)。
+`provider add` 不覆盖同名连接；若连接仍被模型别名引用，`remove` 会报错拒绝并保留原配置。更多参数与凭据存储机制见 [模型与配置](CONFIGURATION.md)。
 
-配置保存成功表示持久化已完成。已运行的功能按各自生命周期读取配置；Heartbeat 的开关和节奏在创建 Runtime 时读取，修改后需要重新启动相应 Host 才应用，不会因一次 `config set` 自动重启运行中的任务。
-
-Desktop 仅使用内置浅色、深色主题，明暗偏好沿用配置入口：
+- **外观偏好管理**：
 
 ```bash
 biny config set themePreference system --json
 ```
 
-可将 `themePreference` 设为 `system`、`light` 或 `dark`。字体通过 `fontPreference` 管理。
+`themePreference` 可设为 `system`、`light` 或 `dark`；字体偏好通过 `fontPreference` 控制。
 
 ## 会话、用量与工具
 
@@ -112,17 +110,25 @@ biny tool list --session <session-id> --json
 biny tool call Read '{"path":"README.md"}' --session <session-id> --json
 ```
 
-`session create` 在当前工作区已有 Host 中创建新的空会话，不发起模型请求。`messages` 读取当前消息分支，包含压缩前的消息；默认每条正文预览 80 字符，`--full` 返回全文及结构化内容。分页返回 `nextOffset`，读完为 `null`。`search` 在当前目录所属工作区按会话 ID、标题、标签和当前分支消息正文搜索，返回目录元数据；`--cursor` 继续相同查询，不能当作全局消息检索。跨工作区的消息检索仍使用 `history search`。
+### 会话生命周期与检索
 
-重命名、置顶、归档、复制和删除通过 Desktop 的会话管理服务执行，默认项目是当前目录对应的登记项目，也可显式指定 `--project <project-id>`。重命名、置顶和归档接受 `--revision <revision>`，用于携带已观察到的元数据版本。`unpin/unarchive` 撤销对应状态；`duplicate` 复制为新会话。删除会移除会话记录，不删除项目文件；运行中的会话沿用已有的拒绝删除规则。
+- `session create`：在当前工作区 Host 中创建空白会话，不触发模型请求。
+- `session messages`：分页拉取指定分支的消息流，包含压缩前原始记录；默认预览 80 字符，加 `--full` 查看完整正文与结构化工具数据。
+- `session search`：在当前工作区按会话 ID、标题、标签与消息正文检索，返回目录元数据；跨项目全局检索请使用 `biny history search`。
+- `rename / pin / unpin / archive / unarchive / duplicate / delete`：通过 Desktop 维护会话元数据（支持传 `--revision` 进行版本防冲突核对）。删除操作仅抹除会话事件，绝不删除工作区项目文件；运行中会话拒绝删除。
 
-会话用量、压缩和工具通过 Host 查询或执行，`--session` 可由 `BINY_AGENT_SESSION_ID` 提供；不隐式选择“最近会话”。`session usage` 返回目标会话的汇总、报告和请求统计。`usage` 汇总全局运行目录中已落盘的用量，以运行事件 ID 去除复制记录中的同一事件；旧记录或导入数据缺少原始身份时无法识别重复，父子会话的关联用量也可能重复计入。它是本地记录汇总，不是 Provider 账单；缺失计价仍返回未知金额。
+### 用量核算与工具直调
 
-`tool list` 查看可用工具目录及参数，不代表它们已全部暴露给当前模型请求。`tool call <name> [JSON]` 不调用模型，直接通过所属 Host 的工具执行器执行，沿用参数 schema、路径权限、审批规则和会话审计。它需要空闲会话及写入权；不能从正在运行的 Agent Shell 中用它另开执行器插入该会话，活动回合继续使用自身的工具调用。明确要求完整确认的操作不会自动获批。调用进程退出或按 Ctrl+C 断开连接时，Host 取消该次工具执行并等待执行器收尾。压缩同样沿用 writer 与忙闲规则。
+- `session usage`：查询指定会话的 Token 消耗、费用估算与请求统计。
+- `biny usage`：汇总全局运行目录已落盘的本地历史用量（基于运行事件 ID 去重）。
+- `tool list`：查询当前会话已注册的可用工具目录及参数 Schema。
+- `tool call <name> [JSON]`：**不请求大模型**，直接通过所属 Host 工具执行器执行底层工具。调用严格遵循参数校验、路径权限、审批规则与审计日志；要求会话处于空闲状态。调用进程退出或按 `Ctrl+C` 时，Host 自动取消该次执行并安全收尾。
 
-历史恢复、搜索和导入导出继续使用 `resume`、`history`、`session export/import`，详见[会话与恢复](SESSIONS.md)。
+会话恢复、导出与导入规则见 [会话与恢复](SESSIONS.md)。
 
 ## 项目、预览与终端
+
+### 项目管理
 
 ```bash
 biny project list --json
@@ -133,13 +139,16 @@ biny project rename <project-id> "项目名称" --json
 biny project remove <project-id> --json
 ```
 
-`add` 登记已有目录；`create` 新建目录再登记。`remove` 从 Desktop 项目列表移除登记，保留项目目录与文件；运行中的项目仍按现有规则拒绝移除。
+- `add`：将本地既有目录登记为 Desktop 项目。
+- `create`：新建物理目录并完成登记。
+- `remove`：仅从 Desktop 侧栏移除登记，保留全部项目文件与历史记录。
 
-进入已登记项目的目录后，可直接操作它的预览和终端；在其他目录操作时传入 `--project <project-id>`：
+### 本地预览与嵌入终端
+
+在项目目录下执行（或在任意目录传 `--project <project-id>`）：
 
 ```bash
 biny preview detect --json
-biny preview start --json
 biny preview start --entry pages/demo.html --json
 biny preview status --json
 biny preview stop --json
@@ -151,15 +160,32 @@ biny terminal write <terminal-id> $'pwd\n' --json
 biny terminal close <terminal-id> --json
 ```
 
-预览复用 Desktop 的 HTML 静态服务或项目开发服务器，`detect` 返回可用类型、入口或不可用原因。HTML 的 `--entry` 从检测结果中选择。停止预览关闭对应服务或预览终端。
-
-终端使用 Desktop 已有的 PTY 和命名槽；相同项目、相同名称复用同一终端。`write` 发送原样输入，不自动追加 Enter；示例中的 `$'pwd\n'` 为 macOS/Linux shell 写法。`read` 返回最近的回放文本及序号，受现有 256 KiB 缓冲限制，不是完整日志文件。终端 ID 必须属于指定项目；`close` 使用已有的终端关闭流程。
+- **页面预览**：`detect` 自动探测项目开发服务器或静态 HTML 站点；`start` 启动静态服务或开发服务器，`stop` 关闭预览。
+- **嵌入终端**：复用 Desktop PTY 命名槽。`write` 原样发送输入（示例为 Shell 换行写法 `$'pwd\n'`）；`read` 读取最近 256 KiB 回放缓冲区。
 
 ## 用户资料与具名子代理
+
+### 用户画像
 
 ```bash
 biny user show --json
 biny user set "项目文档使用中文；提交说明使用英文。" --json
+```
+
+`user` 命令用于维护长期用户偏好，具备正文规范化与版本检查机制；人格设定由 `soul` 管理。
+
+### 编辑人格（SOUL.md）
+
+```bash
+biny soul edit
+```
+
+- **编辑器解析**：优先读取环境变量 `VISUAL`，其次读取 `EDITOR`；macOS 默认回退至 `open -e`。
+- **安全参数解析**：编辑器值按标准参数引号规则解析，不经过 Shell，避免恶意指令注入；Soul 文件路径固定作为末尾参数追加。
+
+### 具名子代理定义
+
+```bash
 biny agent list --json
 biny agent show reviewer --json
 biny agent create reviewer --file reviewer.md --json
@@ -167,19 +193,12 @@ biny agent create reviewer --file reviewer.md --global --json
 biny agent delete reviewer --json
 ```
 
-`user` 读写持久化的用户资料，复用已有版本检查、正文规范化和历史保存。`soul` 管理人格内容，职责与用户资料不同。
-
-`biny soul edit` 优先使用非空的 `VISUAL`，其次使用非空的 `EDITOR`（忽略首尾空白）。两者都未设置或为空时，macOS 使用 `open -e`；其他平台只显示 Soul 文件路径及编辑器设置提示。
-
-编辑器值按 argv 引号分组解析，不经过 shell：例如值 `"/opt/My Editor/editor" --wait` 保留带空格的可执行路径，`code --title "two words"` 保留带空格的参数。单、双引号都可分组，相邻片段拼接，空引号参数保留；未闭合引号或空可执行名称会报错，不回退到另一个编辑器。单引号内所有字符原样保留。其他位置只有双引号前的连续反斜杠有转义含义：每对保留一个反斜杠，偶数个让双引号开启/结束分组，奇数个让双引号成为字面字符。因此 `code "C:\folder\\"` 的目录参数以一个反斜杠结尾。其余反斜杠都保留，`code /tmp/my\ folder` 仍分成 `/tmp/my\` 和 `folder`，路径中的空格应使用引号。这里展示的是环境变量的值，设置变量时还需遵循所在 shell 的赋值语法。
-
-不展开环境变量、通配符或命令替换，也不执行管道、重定向等 shell 运算符；Soul 路径始终作为一个末尾参数追加。显式配置的编辑器程序本身仍会正常运行，这不是对该程序的沙箱限制。
-
-`agent list/show` 查询具名子代理定义，不启动子代理。`create` 接收完整 Markdown 定义，frontmatter 的 `name` 须匹配命令参数，并提供 `description` 和正文；名称使用 1–64 个小写字母、数字、下划线或连字符。默认写入第一个配置的项目 Agent 目录，`--global` 写入全局目录，不覆盖已有同名定义。创建结果返回完整定义及路径。
-
-项目级同名定义优先于全局定义。`delete` 删除当前选中的定义，项目覆盖删除后可重新显露全局定义；`delete --global` 明确删除全局定义。定义文件格式与执行约束见[扩展与子代理](EXTENSIONS.md#子代理)。
+- **创建规则**：`create` 接收带 YAML frontmatter 的 Markdown 文件（`name` 需匹配命令参数，包含 `description` 与正文）。
+- **作用域优先级**：默认保存在项目级 Agent 目录，传 `--global` 写入全局配置；同名定义**项目级优先于全局**。删除项目定义后自动显露全局同名配置。详见 [扩展与子代理](EXTENSIONS.md#子代理)。
 
 ## 内置浏览器
+
+通过 `biny iab` 操作 Desktop 运行中的内置浏览器服务（与 Chrome Relay 的 `biny browser` 区分）：
 
 ```bash
 biny iab envs --json
@@ -190,100 +209,78 @@ biny iab click '#save' --json
 biny iab fill '#query' '项目 CLI' --json
 biny iab press Enter --selector '#query' --json
 biny iab scroll 600 --json
-biny iab back --json
-biny iab forward --json
-biny iab reload --json
-biny iab history --json
 biny iab screenshot --out page.png --json
 biny iab eval 'document.title' --json
 biny iab cdp Page.getNavigationHistory '{}' --json
 biny iab viewport set 390 844 --mobile --json
 biny iab viewport reset --json
+```
+
+### 文件传输与数据导出
+
+```bash
 biny iab upload 'input[type=file]' reports/summary.pdf --json
 biny iab download https://example.test/report.pdf --out report.pdf --json
 biny iab download-media 'video' --out clip.mp4 --json
 biny iab export pdf --out page.pdf --json
-biny iab export html --out page.html --json
-biny iab export mhtml --out page.mhtml --json
 biny iab export md --out page.md --json
 biny iab export-gsuite docx --out document.docx --json
-biny iab export-gsuite xlsx --out spreadsheet.xlsx --json
+```
+
+- **安全边界**：读写文件必须位于当前工作区内，禁止访问受保护路径；单次上传最多 10 个文件且总计 ≤8 MiB，下载单文件 ≤8 MiB，输出文件不可覆盖已有文件。
+
+### 弹窗、标签页与环境隔离
+
+```bash
 biny iab dialog watch --json
-biny iab dialog get --json
-biny iab dialog accept "提示框回复" --json
+biny iab dialog accept "确认回复" --json
 biny iab dialog dismiss --json
-biny iab dialog stop --json
-biny iab dialog auto accept "授权的提示框回复" --json
-biny iab dialog auto dismiss --json
-biny iab dialog auto stop --json
-biny iab clipboard write "待粘贴文本" --json
-biny iab clipboard read --json
 biny iab tab list --json
 biny iab tab new https://example.test --env <environment-id> --json
 biny iab tab select <tab-id> --json
-biny iab tab close <tab-id> --json
 biny iab tab float <tab-id> --json
-biny iab tab stop <tab-id> --json
 biny iab env create --file browser-environment.json --json
-biny iab env update <environment-id> --file browser-environment.json --json
-biny iab env clear <environment-id> --json
-biny iab env import-cookies <source-environment-id> <target-environment-id> --json
-biny iab env delete <environment-id> --json
+biny iab env import-cookies <src-env-id> <dst-env-id> --json
 biny iab profile list --json
-biny iab profile import <profile-id> --json
 biny iab profile history <profile-id> --query github --limit 50 --json
-biny iab locator '{"steps":[{"m":"getByRole","role":"button","name":"Save"}],"action":{"m":"count"}}' --json
-biny iab dom-snapshot --json
-biny iab dom-action '{"snapshotId":"<snapshot-id>","ref":"e2","action":{"m":"click"}}' --json
-biny iab cua '{"action":"click","x":320,"y":210}' --json
-biny iab cua '{"action":"keypress","key":"c","modifiers":["Control"]}' --json
 ```
 
-Locator 操作使用链式查询，页面动作要求唯一目标；存在重复项时先 `count`，再添加 `first`、`last` 或 `nth`。DOM 引用必须连同快照返回的 `snapshotId` 使用，单次动作或页面导航后重新获取。CUA 坐标是当前视口 CSS 像素；动作仅作用于 Biny 内置浏览器。
-
-`click/fill/press` 操作当前内置页面，`fill` 替换控件值，`press --selector` 先聚焦指定元素再发送按键。`download-media <selector> --out <path>` 保存页面中的媒体资源；`export-gsuite <format> --out <path>` 导出当前 Google Workspace 文件。`info` 已提供当前页面读取；`fetch` 用所选登录环境抓取页面。`browser` 命令操作 Chrome Relay 连接的浏览器，可在指定配置中开新标签或前进/后退；目标与 `iab` 不同，详见[浏览器](BROWSER.md)。用户直接运行 `biny browser act evaluate --args '<JSON>'` 时可执行当前 Chrome 页面的表达式；Agent 应调用 `ChromeRelayEval`，由统一权限策略处理。
-
-`iab profile history` 查询本机已列出配置的近期访问记录（URL、标题和时间），可用 `--query` 按 URL 或标题筛选，并用 `--limit` 限制结果数为 1 到 100 条。只有用户明确要求检查本机浏览历史时才查询；先运行 `profile list` 并使用用户指定的 profile ID。它不读取页面正文。当前仅支持 macOS。
-
-`status` 不创建页面。`back/forward/reload` 等待页面停止加载，导航失败会返回错误；没有可后退/前进的记录时返回当前页面。`scroll <y> --x <x>` 按像素滚动，负数向上或向左。`history` 只列当前页面的导航栈；`screenshot` 保存可见视口 PNG，默认写到系统临时目录中的独立 `biny-browser-*` 目录并打印路径；传 `--out <path>` 时保存为工作区文件。
-
-`eval` 在当前页面执行 JavaScript 表达式并返回结果，成功但没有返回值时 JSON 输出为 `null`；`cdp` 发送指定的原始 DevTools Protocol 方法和 JSON 参数，保留协议本身的能力与副作用。`viewport set/reset` 设置或还原页面视口模拟，不改变应用窗口大小；`--mobile` 同时启用触控输入模拟。`clipboard` 读写 Desktop 系统剪贴板的文本，无需打开页面。
-
-上传、下载、截图和导出沿用浏览器文件传输边界：读写路径必须在当前工作区内，拒绝被禁止的路径，上传最多 10 个文件且合计不超过 8 MiB，单次保存不超过 8 MiB，输出文件须尚不存在且父目录已存在。`upload` 将文件传给指定的文件输入控件并触发 input/change；`download` 使用当前页面环境的登录状态请求 HTTP(S) URL；`export` 支持 PDF、HTML、MHTML 和可读正文 Markdown。
-
-需要处理网页 alert、confirm 或 prompt 时先运行 `dialog watch`。监听保留在 Desktop 中，`get` 查看当前弹窗，`accept [text]` 接受并可填写 prompt，`dismiss` 拒绝，`stop` 停止监听；关闭页面会清理监听。确有明确授权时可用 `dialog auto accept [text]` 或 `dialog auto dismiss` 自动处理当前文档后续弹窗，并在目标操作完成后运行 `dialog auto stop`；主页面导航会撤销该策略。弹窗命令可以在页面 JavaScript 正等待回复时执行。
-
-`tab` 管理当前目录登记项目的标签页，可传 `--project <id>`；`float` 切换独立浮窗，`stop` 停止加载。页面交互命令使用当前选中的页面，不隐式选择其他标签。环境文件格式为 `{"name":"Work","proxy":{"mode":"system"}}`，代理字段沿用浏览器环境设置。默认环境不能修改、删除或清空。`clear` 清空指定环境的本地站点数据；`import-cookies` 用源环境 Cookie 替换目标环境 Cookie；`profile import` 将本机浏览器配置的 Cookie 导入默认环境。它们操作真实登录状态，沿用 Desktop 的运行门禁。
+- **网页弹窗**：`dialog watch` 监听 alert/confirm/prompt，支持手动 `accept/dismiss` 或自动处理。
+- **环境与 Cookie**：支持创建隔离的浏览环境并独立管理站点 Cookie，详细说明见 [浏览器](BROWSER.md)。
 
 ## 其他命令入口
 
-以下按任务列出其余命令域，具体操作和参数通过 `biny <模块> --help` 查看。
-
-| 任务 | 命令入口 | 说明 |
+| 功能类别 | 核心命令 | 专题指引 |
 | --- | --- | --- |
-| 初始化、环境与 ACP 检查 | `init`、`doctor`、`acp` | 配置初始化、本机诊断和已配置 ACP 连接检查。 |
-| 终端对话与一次性执行 | `chat`、`tui`、`run`、`resume` | [会话与恢复](SESSIONS.md)。 |
-| 长期事实、历史与日记 | `memory`、`history`、`diary`、`reflection`、`heartbeat` | [长期记忆](MEMORY.md)。 |
-| 活动采集与工作日报 | `activity` | [活动记录与 Appshots](ACTIVITY.md)。 |
-| 人格与个性化 | `soul`、`emotion`、`fatigue`、`sleep`、`wake`、`rest`、`selfie`、`travel` | 按对应帮助读取或维护已有状态与内容。 |
-| 对象引用与双链 | `ref` | 搜索、解析、关联、引用图、片段和固定对象，见[扩展](EXTENSIONS.md)。 |
-| 任务、目标与自动化 | `todo`、`task`、`goal`、`plan`、`graph`、`automation` | [目标与自动化](AUTOMATION.md)。 |
-| 交互提问 | `input` | 发起问题、查看待答项与提交回答，见[扩展](EXTENSIONS.md)。 |
-| 扩展与外部数据导入 | `skill`、`imports` | [Skills](EXTENSIONS.md#skills) 与[应用导入](IMPORTS.md)。 |
-| Computer Use | `computer`、`cu` | [Computer Use](COMPUTER_USE.md)。 |
-| 图片、视频与交互内容 | `image`、`video`、`widget` | 生成或编辑图片、分析视频、渲染 HTML 内容。 |
-| Telegram | `telegram` | 渠道运行与已配置接收方的消息操作。 |
-| 常驻运行与评测 | `daemon`、`runtime-host`、`eval` | [架构](ARCHITECTURE.md)、[评测](EVALUATION.md)。 |
+| **初始化与诊断** | `init`、`doctor`、`acp` | [模型与配置](CONFIGURATION.md)。 |
+| **终端交互与执行** | `chat`、`tui`、`run`、`resume` | [会话与恢复](SESSIONS.md)。 |
+| **长期记忆与日记** | `memory`、`history`、`diary`、`reflection`、`heartbeat` | [长期记忆](MEMORY.md)。 |
+| **桌面活动与日志** | `activity` | [活动记录与 Appshots](ACTIVITY.md)。 |
+| **人格与情绪作息** | `soul`、`emotion`、`fatigue`、`sleep`、`wake`、`rest`、`selfie`、`travel` | 终端运行 `biny <模块> --help`。 |
+| **对象双链与引用** | `ref` | [扩展](EXTENSIONS.md)。 |
+| **任务目标与自动化** | `todo`、`task`、`goal`、`plan`、`graph`、`automation` | [目标与自动化](AUTOMATION.md)。 |
+| **交互提问** | `input` | [扩展](EXTENSIONS.md)。 |
+| **Skills 与外部导入** | `skill`、`imports` | [Skills](EXTENSIONS.md#skills) 与 [从其他应用导入](IMPORTS.md)。 |
+| **桌面控制** | `computer`、`cu` | [Computer Use](COMPUTER_USE.md)。 |
+| **多媒体与可视化** | `image`、`video`、`widget` | [模型与配置](CONFIGURATION.md)。 |
+| **Telegram 渠道** | `telegram` | [模型与配置](CONFIGURATION.md#telegram-渠道)。 |
+| **后台服务与评测** | `daemon`、`runtime-host`、`eval` | [架构](ARCHITECTURE.md)、[评测](EVALUATION.md)。 |
 
 源码入口：[命令注册](../src/cli/index.ts)、[配置操作](../src/config/commands.ts)、[Desktop 命令服务](../src/desktop/electron/main/DesktopCommandService.ts)。
 
 ## 截取 Biny 窗口
 
-在 Desktop 的「视图」菜单选择「截取窗口…」（`Cmd/Ctrl+Shift+S`）。可截整个窗口或当前内容区域；设置打开时，当前内容只包含右侧设置页。预览支持拖动、滚轮缩放、裁剪和框选打码，裁剪与打码均可撤销、重做。可选择照片、色彩、透明或本地图片背景，调整边距与阴影，再复制图片或保存 PNG。本地背景图片支持 PNG、JPEG、WebP，最大 20 MB、3200 万像素，仅在内存中使用。「隐私」中的开关分别控制会话标题打码和邮箱模糊，即时切换，不重拍、不清空已有编辑。重拍重新读取当前画面；遮盖直接写进导出图片。
+在 Desktop 中按快捷键 `Cmd/Ctrl+Shift+S`，或通过菜单「视图 → 截取窗口…」唤出窗口截取工具：
+- **截取范围**：可选取整个应用窗口或当前内容工作区。
+- **编辑与美化**：支持拖拽、滚轮缩放、矩形裁剪、选区脱敏打码（支持撤销/重做），可自定义纯色、照片或透明背景并调节边距阴影。
+- **隐私保护**：内置「会话标题打码」与「邮箱脱敏」开关，即开即用，直接输出安全合成图。
+
+命令行自动化截图：
 
 ```bash
 biny capture --scope content --out ./biny-content.png --json
 biny capture --rect 240,60,900,600 --out ./biny-region.png
 ```
 
-命令连接正在运行的 Desktop，默认截整个窗口并将侧栏和顶部会话标题替换为灰条；`--no-privacy` 保留标题。项目名称和 Computer History 数据保持原样。矩形使用窗口内容区坐标，只截当前可见部分。CLI 保存原始截图，不添加预览中的背景与边距；不覆盖已有文件，省略 `--out` 时保存到临时目录并输出路径。不需要屏幕录制权限，不读取其他应用。正文中的敏感内容需在预览中自行遮盖，隐藏标题不等于全文脱敏。
+- 连接正在运行的 Desktop，默认对侧栏与顶部标题打码；传 `--no-privacy` 保留原始标题。
+- 仅截取 Biny 自身的应用窗口，不申请 macOS 屏幕录制权限，不读取其他应用界面。
